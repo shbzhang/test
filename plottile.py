@@ -1,3 +1,6 @@
+#align lvmaps to a reference
+#output the lv and ii images
+
 import numpy as np
 from astropy.io import fits
 from scipy.interpolate import RectBivariateSpline
@@ -24,7 +27,7 @@ class LinearWCS():
 		return self.pixel_to_world([-0.5, self.wcs['NAXIS']-0.5])
 
 
-if 0:
+if 1:
 	#Resample LVMAP of 12CO/C18O to 13CO
 	hdu12 = fits.open('lvmapgoodlooking/tile_U_lvmap.fits')[0]
 	wcs12 = LinearWCS(hdu12.header, 2)
@@ -97,7 +100,7 @@ if 1:
 	plt.savefig('LV.png',dpi=300)
 	#plt.show()
 	
-if 0:
+if 1:
 	#output a integrated intensity image
 	hdu12 = fits.open('whole/tile_U_m0.fits')[0]
 	hdu13 = fits.open('whole/tile_L_m0.fits')[0]
