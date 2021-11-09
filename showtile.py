@@ -1,3 +1,7 @@
+#this code composite mwisp lv/m0 maps into RGB image
+#1.align lvmaps to a reference
+#2.output the lv and m0 images
+
 import numpy as np
 from astropy.io import fits
 from scipy.interpolate import RectBivariateSpline
