@@ -1,3 +1,5 @@
+#this code compare the difference of mosaicked datacube between using 30"cos(b0) and using 30" spacing
+
 import matplotlib.pyplot as plt
 from cubemoment import cubemoment
 import numpy as np
