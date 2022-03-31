@@ -11,9 +11,15 @@ from os.path import exists
 from scipy.linalg import lstsq
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import matplotlib.colors as colors
+#import matplotlib.ticker as ticker
+#import matplotlib.colors as colors
 
+#https://github.com/tvwenger/kd
+from kd import rotcurve_kd
+rotcurve = 'reid19_rotcurve' # the name of the script containing the rotation curve
+dtor=np.pi/180
+beam = 50#arcsec
+R0 = 8.15
 
 def m2correction_simulation():
 	#simulate calculate moment2 while intensity below threshold is removed.
@@ -27,10 +33,10 @@ def m2correction_simulation():
 	threshold=2
 	#Sigma=np.arange(1,60,0.5)
 	#SNR=np.arange(2,81,0.5)
-	SNR=2**np.linspace(1.6,6.5,20)
+	SNR=2**np.linspace(1,6.5,40)
 	for snr in tqdm(SNR):
 		#upper = np.exp(np.exp(1.25-np.log(np.log(snr))*3))
-		Sigma = 2**np.linspace(0,6,20)
+		Sigma = 2**np.linspace(0,6,40)
 		for sigma in Sigma:
 			fitting=[]
 			for niter in range(50):
@@ -82,6 +88,51 @@ plt.ylabel('SNR')
 plt.show()
 '''
 
+def _Tex(Tpeak):
+	#Nagahama et al. 1998
+	return 5.53/np.log(1+5.53/(Tpeak+0.819))
+
+def _thermal_velocity_dispersion(Tex):
+	#this is thermal velocity dispersion of gas or SOUND SPEED(C_s)
+	#VD_th,gas = sqrt(k_B*T/nu/m_p)
+	#nu = 2.33 for mulecular gas / 1.27 for atomic gas
+	return 0.05952026*np.sqrt(Tex)	#np.sqrt(con.k_B*u.K/2.33/con.m_p).to('km/s')
+
+def _nonthermal_velocity_dispersion(velocity_dispersion_mol, Tex, w_mol=13+16):
+	#this is nonthermal velocity dispersion
+	#VD_nt^2 = VD_obs,i^2 - VD_th,i^2 (Hacar et al. 2022)
+	#VD_th,i = sqrt(k_B*T/nu_i/m_p)
+	#where i represent certain molecule, nu is molecular weight (nu_13CO = 29), m_p is proton mass
+	thermal_velocity_dispersion_i = 0.09085373 * np.sqrt(Tex/w_mol) #np.sqrt(con.k_B*u.K/con.m_p).to('km/s')
+	return np.sqrt(velocity_dispersion_mol**2 - thermal_velocity_dispersion_i**2)	#still need number of channels >5
+
+def _total_gas_velocity_dispersion(nonthermal_velocity_dispersion, thermal_velocity_dispersion):
+	return (nonthermal_velocity_dispersion**2+thermal_velocity_dispersion**2)
+
+def _larson_distance(cat):
+	###use Sigma*R sigma_v relation
+	log_SR_far = np.log10(cat.SurfaceDensity*cat.angsz/2*cat.Dfar*1e3)		#in pc
+	log_SR_near = np.log10(cat.SurfaceDensity*cat.angsz/2*cat.Dnear*1e3)	#in pc
+	log_SR_larson = np.log10((cat.avm2/0.23)**(1/0.43))	#in pc
+
+	###use R sigma_v relation
+	#log_SR_far = np.log10(cat.angsz/2*cat.Dfar*1e3)		#in pc
+	#log_SR_near = np.log10(cat.angsz/2*cat.Dnear*1e3)	#in pc
+	#log_SR_larson = np.log10((cat.avm2/0.48)**(1/0.63))	#in pc
+	
+	#log_R_larson = np.log10((dv/0.778)**(1/0.43))	#in pc
+
+	useD = cat.Dfar.copy()
+	nanfar = np.isnan(cat.Dfar)
+	useD[nanfar] = cat.Dnear[nanfar]
+
+	usenear = np.isfinite(cat.Dnear) & np.isfinite(cat.Dfar)\
+		& (np.abs(log_SR_far - log_SR_larson) > np.abs(log_SR_near - log_SR_larson))
+	useD[usenear] = cat.Dnear[usenear]
+	cat.D=useD 	#in kpc
+	return cat
+
+
 def m2correction_interpolate(filename='m2correction2sigma.dat', plot=False):
 	#interpolate on the simulation points
 	from scipy import interpolate
@@ -91,7 +142,7 @@ def m2correction_interpolate(filename='m2correction2sigma.dat', plot=False):
 	if plot:
 		fig = plt.figure()
 		ax = plt.axes(projection='3d')
-		ax.scatter3D(SNR, Fitting, Sigma/Fitting, c=Sigma, cmap='rainbow', marker='.')
+		ax.scatter3D(SNR, Sigma, Fitting, c=Fitting, cmap='rainbow', marker='.')
 		x = np.arange(2,81,0.25)
 		y = np.arange(1,60,0.25)
 		xx, yy = np.meshgrid(x, y)
@@ -100,14 +151,22 @@ def m2correction_interpolate(filename='m2correction2sigma.dat', plot=False):
 		#ax.contour3D(xx,yy,zz,levels=np.arange(1,20,0.5),cmap='rainbow')
 		#ax.plot_surface(xx, yy, zz, rstride=1, cstride=1,cmap='viridis', edgecolor='none')
 		ax.set_xlabel('SNR')
-		ax.set_ylabel('Moment2')
-		ax.set_zlabel('Sigma/Fitting');
+		ax.set_ylabel('$\sigma$');
+		ax.set_zlabel('Moment2')
 		plt.show()
 	return f
 
+def _c2v(header, c=None, unit='km/s'):
+	if c is None: c=np.arange(header['NAXIS3'])
+	vmps = (c-header['CRPIX3']+1) * header['CDELT3'] + header['CRVAL3']
+	return vmps/1e3 if unit=='km/s' else vmps
 
+def _v2c(header, v=None, unit='km/s'):
+	if v is None: return np.arange(header['NAXIS3'])
+	vmps = v*1e3 if unit=='km/s' else v
+	return (vmps-header['CRVAL3'])/header['CDELT3']+header['CRVAL3']-1
 
-class MWISPCube():
+class Decompose():
 	if _user=='sz268601':
 		fitspath = '/Users/sz268601/Work/DeepOutflow/procedure/prediction/whole'
 		outpath = 'label/'
@@ -115,44 +174,65 @@ class MWISPCube():
 		fitspath = '/share/public/shbzhang/deepcube/'
 		outpath = 'label/'
 	overlap = 36
-	boundary = ['120.958', '20.917', '-4.082', '4.082']
+	boundary = ['229.167', '012.750', '-4.083', '+4.083']
 
 	def __init__(self, prefix = '027.042+2.042', redo=True):
-		MWISPCube._appendlog('Dealing with %s\n' % prefix)
+		#self._appendlog('Dealing with %s\n' % prefix)
 		self.prefix = prefix
 		self.redo = redo
 		#input files
-		self.usbfile = os.path.join(self.fitspath, prefix+'_U.fits')
-		self.lsbfile = os.path.join(self.fitspath, prefix+'_L.fits')
-		self.usbrmsfile = os.path.join(self.fitspath, prefix+'_U_rms.fits')
-		self.lsbrmsfile = os.path.join(self.fitspath, prefix+'_L_rms.fits')
-		#output files
-		self.dcpfile = os.path.join(self.outpath, prefix+'_decompose.fits')
-		self.caafile = os.path.join(self.outpath, prefix+'_L_out.fits')
-		self.mmtfile = os.path.join(self.outpath, prefix+'_L_mmt.fits')
-		self.tvwfile = os.path.join(self.outpath, prefix+'_U_tvw.fits')
+		self.usbfits = os.path.join(self.fitspath, prefix+'_U.fits')
+		self.lsbfits = os.path.join(self.fitspath, prefix+'_L.fits')
+		self.usbrmsfits = os.path.join(self.fitspath, prefix+'_U_rms.fits')
+		self.lsbrmsfits = os.path.join(self.fitspath, prefix+'_L_rms.fits')
+		#output files (each line is a pixel in a clump)
+		self.dcpfits = os.path.join(self.outpath, prefix+'_decompose.fits')	#obsolete
+		self.caafits = os.path.join(self.outpath, prefix+'_L_out.fits')	#cupid labelled cube
+		self.mmtfits = os.path.join(self.outpath, prefix+'_L_mmt.fits')	#moment map for each clump
+		self.tvwfits = os.path.join(self.outpath, prefix+'_U_tvw.fits')	#Temperature, velicity, width map for each clump
 		self.mmttable = os.path.join(self.outpath, prefix+'_L_mmt.npy')
 		self.mmtctable = os.path.join(self.outpath, prefix+'_L_mmtCM2.npy')
 		self.tvwtable = os.path.join(self.outpath, prefix+'_U_tvw.npy')
-		self.dspfile = os.path.join(self.outpath, prefix+'_NT.fits')
+		self.dsptable = os.path.join(self.outpath, prefix+'_nt.npy')
+		self.dsttable = os.path.join(self.outpath, prefix+'_D.npy')	#distance copied from clump catalogue
+		#clump table (each line is a clump)
+		self.clumptable = os.path.join(self.outpath, prefix+'_clump.cat')	#geometry info for clumps
+		self.cdsttable = os.path.join(self.outpath, prefix+'_clump_dst.cat')	#Distance info for clumps
+		self.cmastable = os.path.join(self.outpath, prefix+'_clump_mas.cat')	#Mass/Sdensity info for clumps
+		self.cgrdtable = os.path.join(self.outpath, prefix+'_clump_grd.cat')	#Gradient info for clumps
+		self.avsparray = os.path.join(self.outpath, prefix+'_L_avsp.npy')	#AVerage SPectral array
+		self.ccavsptable = os.path.join(self.outpath, prefix+'_clump_avsp.table')	
+		self.ctnttable = os.path.join(self.outpath, prefix+'_clump_tnt.cat')	#Thermal / Non-Thermal info
+		self.Dlimit = 1 #kpc
+		self.ntmap = os.path.join(self.outpath, prefix+'_map_nt%1ikpc.fits' % self.Dlimit)	#Non-Thermal VD map
+		self.machmap = os.path.join(self.outpath, prefix+'_map_mach%1ikpc.fits' % self.Dlimit)	#Non-Thermal VD map
+		self.Nmap = os.path.join(self.outpath, prefix+'_map_N%1ikpc.fits' % self.Dlimit)	#Column density map
+		self.ncompmap = os.path.join(self.outpath, prefix+'_map_ncomp%1ikpc.fits' % self.Dlimit)	#Number of Component map
 
-		self.clumptable = os.path.join(self.outpath, prefix+'_clump.cat')
-		self.cdsttable = os.path.join(self.outpath, prefix+'_clump_dst.cat')
-		self.cmastable = os.path.join(self.outpath, prefix+'_clump_mas.cat')
-		self.cgrdtable = os.path.join(self.outpath, prefix+'_clump_grd.cat')
-
-		self.m2map = os.path.join(self.outpath, prefix+'_map_m2.fits')
-
-		self.shape = fits.open(self.usbrmsfile)[0].data.shape
+		self.shape = [1, None, 281, 281]#fits.open(self.usbrmsfits)[0].data.shape
 		self.xmin = 0 if prefix[:7]==self.boundary[0] else self.overlap//2
 		self.xmax = self.shape[-1]-1 if prefix[:7]==self.boundary[1] else self.shape[-1]-1-self.overlap//2
 		self.ymin = 0 if prefix[7:]==self.boundary[2] else self.overlap//2
 		self.ymax = self.shape[-2]-1 if prefix[7:]==self.boundary[3] else self.shape[-2]-1-self.overlap//2
 
-	def _appendlog(line):
+	def _appendlog(self, line):
 		log = open('decompose.log','a')
-		log.write(line)
+		log.write('%s: %s\n' % (self.prefix,line))
 		log.close()
+
+	def _readytorun(inputs, output, redo=True):
+		miss_inputs=False
+		for file in inputs:
+			if not exists(file):
+				print('  Missing %s' % file)
+				miss_inputs=True
+		if miss_inputs: return False
+		if redo: return True
+		else:
+			if exists(output):
+				print('  Skip this for not REDO')
+				return False
+			else: return True
 
 
 	##################################################################################################################
@@ -160,19 +240,19 @@ class MWISPCube():
 		print("OBSOLETE, USE FellWalker")
 		return
 		#OBSOLETE, use fellwalker result now (cupid.py)
-		if exists(self.lsbfile) & exists(lsbrmsfile):
+		if exists(self.lsbfits) & exists(lsbrmsfits):
 			print('rms = %f' % self.lsbrms)
 			#decompose 13CO datacube
-			hdu = fits.open(self.lsbfile)[0]
-			self.lsbrms = np.nanmean(fits.open(self.lsbrmsfile)[0].data) if exists(self.lsbrmsfile) else None
-			label = MWISPCube._cube2lbl(hdu.data[0], min_intensity=3*self.lsbrms, intensity_step=3*self.lsbrms)	#remember to squeeze data
-			fits.PrimaryHDU(data=label, header=hdu.header).writeto(self.dcpfile, overwrite=True)
+			hdu = fits.open(self.lsbfits)[0]
+			self.lsbrms = np.nanmean(fits.open(self.lsbrmsfits)[0].data) if exists(self.lsbrmsfits) else None
+			label = Decompose._cube2lbl(hdu.data[0], min_intensity=3*self.lsbrms, intensity_step=3*self.lsbrms)	#remember to squeeze data
+			fits.PrimaryHDU(data=label, header=hdu.header).writeto(self.dcpfits, overwrite=True)
 			#filter labels that are small or weak
-			###hdu = fits.open(self.lsbfile)[0]
-			###label = fits.open(self.dcpfile)[0].data
-			clabel = MWISPCube._lbl2caa(label, hdu.data[0], min_pixel=18, min_area=5, min_channel=5, min_peak=self.lsbrms*3)
+			###hdu = fits.open(self.lsbfits)[0]
+			###label = fits.open(self.dcpfits)[0].data
+			clabel = Decompose._lbl2caa(label, hdu.data[0], min_pixel=18, min_area=5, min_channel=5, min_peak=self.lsbrms*3)
 			print('%i components found in total' % (clabel.max()+1))
-			fits.PrimaryHDU(data=clabel, header=hdu.header).writeto(self.caafile, overwrite=True)
+			fits.PrimaryHDU(data=clabel, header=hdu.header).writeto(self.caafits, overwrite=True)
 
 	def _cube2lbl(intensity, min_intensity=0.3*2, intensity_step=0.3*3):
 		#label intensity from high to low like clumpfind
@@ -225,52 +305,53 @@ class MWISPCube():
 	##################################################################################################################
 	def caa2mmt(self):
 		#calculate moment for each 13CO component
-		doit = exists(self.lsbfile) & exists(self.caafile)
-		if not self.redo: doit = doit & (not exists(self.mmtfile))
-		if doit:
-			print('Calculate moment from CAA')
-			hdu = fits.open(self.lsbfile)[0]
-			caa = fits.open(self.caafile)[0].data
-			self.lsbrms = np.nanmean(fits.open(self.lsbrmsfile)[0].data) if exists(self.lsbrmsfile) else None
-			mmt = MWISPCube._caa2mmt(caa[0], hdu.data[0], hdu.header, self.lsbrms)
+		print('Calculate moment from CAA')
+		if Decompose._readytorun([self.lsbfits, self.caafits], self.mmtfits, self.redo):
+			hdu = fits.open(self.lsbfits)[0]
+			caa = fits.open(self.caafits)[0].data
+			self.lsbrms = np.nanmean(fits.open(self.lsbrmsfits)[0].data) if exists(self.lsbrmsfits) else None
+			mmt = Decompose._caa2mmt(caa[0], hdu.data[0], hdu.header, self.lsbrms)
 			if len(mmt)>0:
-				fits.PrimaryHDU(data=mmt, header=hdu.header).writeto(self.mmtfile, overwrite=True)
+				fits.PrimaryHDU(data=mmt, header=hdu.header).writeto(self.mmtfits, overwrite=True)
 
 	def _caa2mmt(caa, intensity, header, rms):
 		#find each component, calculate moment and stack into a cube
 		dv = np.abs(header['CDELT3'])/1e3
-		vaxis = (np.arange(header['NAXIS3'])-header['CRPIX3']+1)*header['CDELT3']+header['CRVAL3']
-		vaxis = vaxis[:,np.newaxis,np.newaxis]/1e3	#to km/s
+		vaxis = _c2v(header)[:, np.newaxis, np.newaxis] #in km/s
+		#vaxis = (np.arange(header['NAXIS3'])-header['CRPIX3']+1)*header['CDELT3']+header['CRVAL3']
+		#vaxis = vaxis[:,np.newaxis,np.newaxis]/1e3	#to km/s
 		nclump = np.nanmax(caa)
 		moment=[]
 		if np.isnan(nclump): return moment
 		for l in tqdm(range(1,int(nclump)+1), desc='label_moment'):
-			mask = caa==l#(label==l) & (intensity>rms*2)
-			c = np.argwhere(mask.any(axis=(1,2)))
-			cslice = slice(c.min(), c.max()+1)
-			subcube = intensity[cslice]*mask[cslice]
+			mask = caa==l
+			cindex = np.argwhere(mask.any(axis=(1,2)))
+			cslice = slice(cindex.min(), cindex.max()+1)
+			#squeeze channels
+			subvaxis = vaxis[cslice]
+			submask = mask[cslice]
+			subcube = intensity[cslice]*submask
 			sumi = subcube.sum(axis=0, keepdims=True)
-			m0 = sumi * dv																		#in K*km/s
-			m1 = (subcube * vaxis[cslice]).sum(axis=0, keepdims=True) / sumi					#in km/s, moment 1 need at least 3 channels to be valid
-			m2 = np.sqrt((subcube * (vaxis[cslice]-m1)**2).sum(axis=0, keepdims=True) / sumi)	#in km/s, moment 2 need at least 5 channels to be valid
+			m0 = sumi * dv																	#in K*km/s
+			m1 = (subcube * subvaxis).sum(axis=0, keepdims=True) / sumi						#in km/s, moment 1 need at least 3 channels to be valid
+			m2 = np.sqrt((subcube * (subvaxis-m1)**2).sum(axis=0, keepdims=True) / sumi)	#in km/s, moment 2 need at least 5 channels to be valid
 			peak = subcube.max(axis=0, keepdims=True)	#in K
-			nchan = mask[cslice].sum(axis=0, keepdims=True)	#in channel
+			nchan = submask.sum(axis=0, keepdims=True)	#in channel
 			moment.append(np.vstack((m0,m1,m2,peak,nchan)))
+
 		return np.array(moment)
 
 
 	##################################################################################################################
 	def mmt2tvw(self):
 		#get Tpeak, velcity, and width for 12CO
-		doit = exists(self.usbfile) & exists(self.mmtfile)
-		if not self.redo: doit = doit & (not exists(self.tvwfile))
-		if doit:
-			print('Calculate TVW from moment')
-			hdu = fits.open(self.usbfile)[0]
-			mmt = fits.open(self.mmtfile)[0].data
-			tvw = MWISPCube._mmt2tvw(mmt, hdu.data[0], hdu.header, width_factor=10)
+		print('Calculate TVW from moment')
+		if Decompose._readytorun([self.usbfits, self.mmtfits], self.tvwfits, self.redo):
+			hdu = fits.open(self.usbfits)[0]
+			mmt = fits.open(self.mmtfits)[0].data
+			tvw = Decompose._mmt2tvw(mmt, hdu.data[0], hdu.header, width_factor=10)
 			hdu.data = tvw
-			fits.PrimaryHDU(data=tvw, header=hdu.header).writeto(self.tvwfile, overwrite=True)
+			fits.PrimaryHDU(data=tvw, header=hdu.header).writeto(self.tvwfits, overwrite=True)
 
 	def _mmt2tvw(moment, intensity, header, width_factor=10):
 		#find tpeak in 12CO for each component
@@ -301,44 +382,25 @@ class MWISPCube():
 					tvw[l,3,y,x] = subspec.max()	#in K, Tpeak
 				except:
 					print('Only %i channels' % moment[l,4,y,x])
-					MWISPCube._appendlog('Only %i channels in clump %i at (x=%i, y=%i)\n' % (moment[l,4,y,x],l,x,y))
+					self._appendlog('Only %i channels in clump %i at (x=%i, y=%i)' % (moment[l,4,y,x],l,x,y))
 		return tvw
-
-
-	# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-	def vd2ntvd():
-		if all([os.path.exists(f) for f in (self.mmtfile, self.tvwfile)]):
-			Tex = 5.53/np.log(1+5.53/(tw[:,:1]+0.819))
-
-	def dispersion(tw, moment):
-		ThermalDispersion = 0.05973641*np.sqrt(Tex)	#np.sqrt(con.k_B/2.33/con.u*u.K).to('km/s')
-
-		OneDDispersion = np.hstack((tw[:,1:],moment[:,1:]))/1e3/np.sqrt(3)
-
-		NonTermalDispersion = np.sqrt(OneDDispersion**2 - ThermalDispersion**2)
-		return NonTermalDispersion
-
 
 	##################################################################################################################
 	def mmt2table(self):
-		doit = exists(self.mmtfile)
-		if not self.redo: doit = doit & (not exists(self.mmttable))
-		if doit:
-			print('Convert mmt to table')
-			mmt = fits.open(self.mmtfile)[0].data
+		print('Convert mmt to table')
+		if Decompose._readytorun([self.mmtfits,], self.mmttable, self.redo):
+			mmt = fits.open(self.mmtfits)[0].data
 			mask = mmt[:,-1]>0
-			table = MWISPCube._sparsearray2table(mmt, mask)
+			table = Decompose._sparsearray2table(mmt, mask)
 			np.save(self.mmttable, table)
 
 	def tvw2table(self):
-		doit = exists(self.mmtfile) & exists(self.tvwfile)
-		if not self.redo: doit = doit & (not exists(self.tvwtable))
-		if doit:
-			print('Convert tvw to table')
-			mmt = fits.open(self.mmtfile)[0].data
+		print('Convert tvw to table')
+		if Decompose._readytorun([self.tvwfits,], self.tvwtable, self.redo):
+			mmt = fits.open(self.mmtfits)[0].data
 			mask = mmt[:,-1]>0
-			tvw = fits.open(self.tvwfile)[0].data
-			table = MWISPCube._sparsearray2table(tvw, mask)
+			tvw = fits.open(self.tvwfits)[0].data
+			table = Decompose._sparsearray2table(tvw, mask)
 			np.save(self.tvwtable, table)
 
 	def _sparsearray2table(array, mask):
@@ -349,13 +411,46 @@ class MWISPCube():
 
 
 	##################################################################################################################
+	def caa2avsp(self):
+		#calculate average spectra for each 13CO component
+		print('Calculate average spectra from CAA')
+		if Decompose._readytorun([self.lsbfits, self.caafits], self.avsparray, self.redo):
+			hdu = fits.open(self.lsbfits)[0]
+			caa = fits.open(self.caafits)[0].data
+			avsp = Decompose._caa2avsp(caa[0], hdu.data[0])
+			np.save(self.avsparray, avsp)
+
+	def _caa2avsp(caa, intensity):
+		#find each component, calculate moment and stack into a cube
+		nclump = np.nanmax(caa)
+		averspec=[]
+		if np.isnan(nclump): return averspec
+		for l in tqdm(range(1,int(nclump)+1), desc='label_moment'):
+			mask = caa==l
+
+			xindex = np.argwhere(mask.any(axis=(0,1)))
+			xslice = slice(xindex.min(), xindex.max()+1)
+			yindex = np.argwhere(mask.any(axis=(0,2)))
+			yslice = slice(yindex.min(), yindex.max()+1)
+
+			submask = mask[:,yslice,xslice]
+			subcube = intensity[:,yslice,xslice]*submask
+
+			npixel = submask.any(axis=0).sum()
+			avsp = np.nansum(subcube, axis=(1,2)) / npixel
+			averspec.append(avsp)
+		return np.array(averspec)
+
+
+	##################################################################################################################
 	def table_correctm2(self, corr=lambda x,y: 1):
-		doit = exists(self.mmttable) & exists(self.lsbrmsfile)
+		#correct moment2 with m2correction simulation results
+		print('Correct M2')
+		doit = exists(self.mmttable) & exists(self.lsbrmsfits)
 		if not self.redo: doit = doit & (not exists(self.mmtctable))
 		if doit:
-			print('Correct M2')
 			mmt = np.load(self.mmttable)
-			hdu = fits.open(self.lsbrmsfile)[0]
+			hdu = fits.open(self.lsbrmsfits)[0]
 			self.lsbrms = np.nanmean(hdu.data)
 			snr = mmt[6]/self.lsbrms
 			fit = mmt[5]*1e3/hdu.header['CDELT3']
@@ -368,64 +463,145 @@ class MWISPCube():
 
 	##################################################################################################################
 	def mmttvw2clump(self, filename=None):
-		doit = exists(self.mmtctable) & exists(self.tvwtable) & exists(self.usbrmsfile)
-		if not self.redo: doit = doit & (not exists(self.clumptable))
-		if doit:
-			print('Convert mmt table to clump table')
-			wcs = WCS(fits.open(self.usbrmsfile)[0].header, naxis=2)
-			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmtctable)
+		print('Convert mmt&tvw table to clump table')
+		if Decompose._readytorun([self.lsbfits, self.mmttable, self.tvwtable, self.usbrmsfits], self.clumptable, self.redo):
+			header = fits.getheader(self.lsbfits)
+			wcs = WCS(header, naxis=2)
+			vaxis = _c2v(header)
+			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
 			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
+			avsp = np.load(self.avsparray)
+
 			cat = []
 			for cn in range(int(mmtn.max())+1):
 				cmask = mmtn==cn
+
 				clm0 = mmtm0[cmask].sum()	#in
 				cum0 = tvwm0[cmask].sum()
+
+				#get position, remove the outsides
 				cy = (mmtm0[cmask]*mmty[cmask]).sum()/clm0	#in array indices
 				if (cy<self.ymin) | (cy>self.ymax): continue
 				cx = (mmtm0[cmask]*mmtx[cmask]).sum()/clm0	#in array indices
 				if (cx<self.xmin) | (cx>self.xmax): continue
+
+				#get size
 				cysz = np.sqrt((mmtm0[cmask]*(mmty[cmask]-cy)**2).sum()/clm0) #in pixel
 				cxsz = np.sqrt((mmtm0[cmask]*(mmtx[cmask]-cx)**2).sum()/clm0) #in pixel
-				nc = mmtnc[cmask]>3
-				clm1 = (mmtm0[cmask][nc] * mmtm1[cmask][nc]).sum() / mmtm0[cmask][nc].sum()	#in km/s
-				cum1 = (tvwm0[cmask][nc] * tvwm1[cmask][nc]).sum() / tvwm0[cmask][nc].sum()	#in km/s
-				nc = mmtnc[cmask]>5
-				clm2 = (mmtm0[cmask][nc] * mmtm2[cmask][nc]).sum() / mmtm0[cmask][nc].sum()	#in km/s
-				cum2 = (tvwm0[cmask][nc] * tvwm2[cmask][nc]).sum() / tvwm0[cmask][nc].sum() #in km/s
+
+				#get moment 1
+				cm1mask = cmask & (mmtnc>=3)
+				mul = mmtm0[cm1mask] * mmtm1[cm1mask]
+				clm1 = np.nansum(mul) / np.sum(mmtm0[cm1mask][np.isfinite(mul)])	#in km/s
+				mul = tvwm0[cmask] * tvwm1[cmask]
+				cum1 = np.nansum(mul) / np.sum(tvwm0[cmask][np.isfinite(mul)])	#in km/s
+
+				#get moment 2
+				cm2mask = cmask & (mmtnc>=5)
+				mul = mmtm0[cm2mask] * mmtm2[cm2mask]
+				clm2 = np.nansum(mul) / np.sum(mmtm0[cm2mask][np.isfinite(mul)])	#in km/s
+				mul = tvwm0[cmask] * tvwm2[cmask]
+				cum2 = np.nansum(mul) / np.sum(tvwm0[cmask][np.isfinite(mul)])	#in km/s
+
+				#get peak
 				clpk = mmtpk[cmask].max()	#in K
 				cupk = tvwpk[cmask].max()	#in K
+
+				#get area & volume
+				carea = (mmtnc[cmask]>0).sum()	#in pixel
 				cnc = mmtnc[cmask].sum()	#in voxel
+
+				#get galactic lon/lat
 				cl,cb = wcs.pixel_to_world_values(cx,cy)	#in deg
-				cat.append({'prefix':self.prefix, 'num':cn, 'x':cx, 'y':cy, 'l':float(cl), 'b':float(cb), \
-					'sx':cxsz, 'sy':cysz, \
-					'nc':cnc, 'm0':[cum0, clm0], 'm1':[cum1, clm1], 'm2':[cum2, clm2], 'peak':[cupk, clpk]})
+				###for l=180deg
+				if np.isnan(cl):
+					cl,cb = wcs.pixel_to_world_values(cx-43200,cy)
+				if cl>229.75: continue
+				if cl<11.75: continue
+
+				#get averspec m1,m2
+				sp = avsp[cn]
+				smask = sp==0
+				smask = smask & np.roll(smask,1) & np.roll(smask,-1)
+				smask = smask | np.roll(smask,1) | np.roll(smask,-1)
+				peakidx = np.argmax(sp)
+				zeroidx = np.argwhere(smask)
+				if (zeroidx<peakidx).any()>0:
+					sp[:zeroidx[zeroidx<peakidx].max()]=0
+				else: self._appendlog('clump out of velocity range of cube')
+				if (zeroidx>peakidx).any()>0:
+					sp[zeroidx[zeroidx>peakidx].min():]=0
+				else: self._appendlog('clump out of velocity range of cube')
+				sumi = sp.sum()
+				cavm1 = (sp*vaxis).sum()/sumi
+				cavm2 = np.sqrt((sp*(vaxis-cavm1)**2).sum() / sumi)
+
+				cat.append({'prefix':self.prefix, 'num':cn, \
+					'x':cx, 'y':cy, 'l':float(cl), 'b':float(cb), 'sx':cxsz, 'sy':cysz, \
+					'area':carea, 'nc':cnc, 'peak':[cupk, clpk], \
+					'm0':[cum0, clm0], 'm1':[cum1, clm1], 'm2':[cum2, clm2], \
+					'avm1':cavm1, 'avm2':cavm2})
 			cat = Catalogue(cat)
 			cat.write(self.clumptable)
+			return self.clumptable
 
-
-	# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-	def orient_fitting(self):
-		pass
+	def clump2table(self, cat, key='D'):
+		#copy clump parameters back to align with mmt table
+		if Decompose._readytorun([self.mmttable, ], self.dsttable, self.redo):
+			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
+			subcat = cat[cat.prefix == self.prefix]
+			mmtn = mmtn.astype(int)
+			value = mmty.copy()
+			value[:] = np.nan
+			for c in subcat:
+				idx = c.num == mmtn
+				if idx.any(): value[idx]=c.D
+			np.save(self.dsttable, np.array(value))
 
 
 	##################################################################################################################
 	def clump_distance(self):
-		doit = exists(self.clumptable)
-		if not self.redo: doit = doit & (not exists(self.cdsttable))
-		if doit:
-			print('Add distance info to clump table')
+		print('Add distance info to clump table')
+		if Decompose._readytorun([self.clumptable], self.cdsttable, self.redo):
 			cat = Catalogue().open(self.clumptable)
 			if len(cat)==0:return
+			###rotcurve_kd raise error if gl below and close to 90deg (eg. 89.99)
+			###	use the average value with bias of +/-0.01 deg
+			#try:
+			#print(np.argwhere((cat.l>89.99)&(cat.l<90)))
+			D = rotcurve_kd.rotcurve_kd(cat.l, cat.b, cat.avm1, rotcurve=rotcurve)
+			'''
+			###fill both distances of which are NAN
+			prev_nannum = 0
+			while True:
+				idx = np.argwhere(np.isnan(D['near']) & np.isnan(D['far'])).ravel()
+				if idx.size == prev_nannum:
+					break
+				prev_nannum = idx.size
+				for i in idx:
+					samecloud = (np.abs(cat.x-cat.x[i])<(cat.sx+cat.sx[i])*10) & (np.abs(cat.y-cat.y[i])<(cat.sy+cat.sy[i])*10) & (np.abs(cat.avm1-cat.avm1[i])<10)
+					if np.isfinite(D['Rgal'][samecloud]).any():
+						for key in D.keys():
+							D[key][i] = np.nanmedian(D[key][samecloud])
+			'''
+			cat.Rgal = D['Rgal']
+			cat.Dnear=D['near']
+			cat.Dfar=D['far']
 
+			cat.write(self.cdsttable)
+			return self.cdsttable
+			#except:
+			#	print('Error in calculate distance for %s' % self.prefix)
+			#	self._appendlog('Error in calculate distance for %s' % self.prefix)
+
+			'''
 			#P. Mroz et al 2018
 			dtor=np.pi/180
 			R0 = 8.5#kpc
 			Vr = 233.6#-1.34*r
 			V0 = 233.6-1.34*R0
-			Vp = cat.m1[:,1] / np.cos(cat.b*dtor)
+			Vp = cat.avm1 / np.cos(cat.b*dtor)
 			l=cat.l*dtor
-			beam = 50#arcsec
-
 			#Marc-Antoine et al. 2017
 			factor = R0 * np.sin(l) / (Vp+V0*np.sin(l))
 			Rgal = 233.6*factor / (1+1.34*factor)
@@ -433,12 +609,14 @@ class MWISPCube():
 			Dnear = R0 * np.cos(l) - np.sqrt(Rgal**2 - R0**2 * np.sin(l)**2)
 			D = R0 * np.cos(l) + np.sqrt(Rgal**2 - R0**2 * np.sin(l)**2)
 			#decide between near and far distance
-			ang_sz = np.sqrt(np.sqrt((cat.sx*2.355*30)**2 - beam**2) * np.sqrt((cat.sy*2.355*30)**2 - beam**2))/3600*dtor
-			dv = cat.m2[:,1]*np.sqrt(3)	#3d vdisp in km/s
-			log_sz_larson = np.log10((dv/0.48)**(1/0.63))	#in pc
-			log_sz_far = np.log10(ang_sz*D*1e3)
-			log_sz_near = np.log10(ang_sz*Dnear*1e3)
-			usenear = (Rgal<R0) & (np.abs(log_sz_far - log_sz_larson) > np.abs(log_sz_near - log_sz_larson))
+			ang_sz = np.sqrt(np.sqrt((cat.sx*2.355*30)**2 - beam**2) * np.sqrt((cat.sy*2.355*30)**2 - beam**2))/3600*dtor #in rad
+			dv = cat.avm2#*np.sqrt(3)	#3d vdisp in km/s
+			log_R_larson = np.log10((dv/0.48)**(1/0.63))	#in pc
+			#log_R_larson = np.log10((dv/0.778)**(1/0.43))	#in pc
+
+			log_R_far = np.log10(ang_sz/2*D*1e3)
+			log_R_near = np.log10(ang_sz/2*Dnear*1e3)
+			usenear = (Rgal<R0) & (np.abs(log_R_far - log_R_larson) > np.abs(log_R_near - log_R_larson))
 			D[usenear] = Dnear[usenear]
 			SZ = ang_sz*D*1e3
 
@@ -447,59 +625,177 @@ class MWISPCube():
 				cat[i].D = d 		#in kpc
 				cat[i].sz = sz 		#in pc
 			cat.write(self.cdsttable)
-
+			return self.cdsttable
+			'''
 
 	##################################################################################################################
 	def clump_mass(self):
-		doit = exists(self.mmttable) & exists(self.tvwtable) & exists(self.cdsttable)
-		if not self.redo: doit = doit & (not exists(self.cgrdtable))
-		if doit:
-			print('Add mass info to clump table')
+		print('Add mass info to clump table')
+		if Decompose._readytorun([self.mmttable, self.tvwtable, self.cdsttable], self.cmastable, self.redo):
 			cat = Catalogue().open(self.cdsttable)
 			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
 			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
 			#Nagahama et al. 1998
-			Tex = 5.53/np.log(1+5.53/(tvwpk+0.819))	#in K
+			Tex = _Tex(tvwpk)	#in K
 			N = 1.49e20 / (1-np.exp(-5.29/Tex)) * mmtm0	#in cm-2
-			for cn in range(int(mmtn.max())+1):
-				if cn in cat.num:
-					cmask = (mmtn==cn)
-					idx = int(np.argwhere(cat.num==cn))
-					###N=1*u.Unit('cm-2')
-					###D=1*u.Unit('kpc')
-					#Tex
-					cat[idx].Tex = np.nanmax(Tex[cmask])	#in K
-					#column density
-					cat[idx].N = np.nanmean(N[cmask]) 	#in cm-2
-					####surface density
-					###f=(N*con.u*1.36*2).to('solMass/pc2') = 2.16278417e-20
-					cat[idx].SurfaceDensity = cat[idx].N*2.16278417e-20		#in Msun/pc2
-					####convert factor from N(cm-2) to mass(M_sun) at D(kpc)
-					###f=((30/3600*np.pi/180*D)**2 * N * con.u*1.36*2 / con.M_sun).cgs = 4.57515092e-22
-					cat[idx].mass = np.nansum(N[cmask])*4.57515092e-22*cat[idx].D**2	#in solar mass
+			for i,cn in enumerate(cat.num):
+				cmask = (mmtn==cn)
+				###N=1*u.Unit('cm-2')
+				###D=1*u.Unit('kpc')
+				#Tex
+				cat[i].Tex = np.nanmax(Tex[cmask])	#in K
+				#column density
+				cat[i].N = np.nanmean(N[cmask]) 	#in cm-2
+				####surface density
+				###f = (N*con.m_p*1.36*2).to('solMass/pc2') = 2.16278417e-20
+				cat[i].SurfaceDensity = cat[i].N*2.16278417e-20		#in Msun/pc2
+				####convert factor from N(cm-2) to mass(M_sun) at D(kpc)
+				###f = ((30/3600*np.pi/180*D)**2 * N * con.u*1.36*2 / con.M_sun).cgs = 4.57515092e-22
+				cat[i].massperD2 = np.nansum(N[cmask])*4.57515092e-22#*cat[i].D**2	#in solar mass/D^2
+			
+			cat.angsz = np.sqrt(np.sqrt((cat.sx*2.355*30)**2 - beam**2) * np.sqrt((cat.sy*2.355*30)**2 - beam**2))/3600*dtor #in rad
+			
+			cat = _larson_distance(cat)
+
+			cat.physz = cat.angsz * cat.D*1e3
+			cat.mass = cat.massperD2 * cat.D**2
+
+			####convert factor from mass(M_sun), Radius(pc) to n(cm-3)
+			#M=1*u.Unit('solMass')
+			#R=1*u.Unit('pc')
+			#f = (M / (con.u*1.36*2) / (4/3*np.pi*R**3)).cgs = 3.57723659
+
 			cat.write(self.cmastable)
+			return self.cmastable
+
+
+	##################################################################################################################
+	def table2dispersion(self):
+		#calculate nonthermal velocity dispersion from mmt & tvw table
+		print('Get NT info from mmt/tvw table')
+		if Decompose._readytorun([self.mmttable,self.tvwtable], self.dsptable, self.redo):
+			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
+			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
+			#subtract thermal linewidth from m2
+			Tex = _Tex(tvwpk)	#in K
+			ThermalDispersion = _thermal_velocity_dispersion(Tex)	#np.sqrt(con.k_B/2.33/con.u*u.K).to('km/s')
+			NonThermalDispersion12 = _nonthermal_velocity_dispersion(tvwm2, Tex, w_mol=12+16)
+			NonThermalDispersion13 = _nonthermal_velocity_dispersion(mmtm2, Tex, w_mol=13+16)#still need number of channels >5
+			dsp = np.c_[ThermalDispersion, NonThermalDispersion12, NonThermalDispersion13]
+			np.save(self.dsptable, dsp.T)
+
+	def clump_tnt(self):
+		print('Add Thermal/NonThermal info to clump table')
+		if Decompose._readytorun([self.mmttable, self.tvwtable, self.dsptable, self.cmastable], self.ctnttable, self.redo):
+			cat = Catalogue().open(self.cmastable)
+			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
+			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
+			tdsp,nt0,nt1 = np.load(self.dsptable)
+			def nanweimean(v,w):
+				vw = v*w
+				return np.nanmean(vw)/np.nanmean(np.isfinite(vw)*w)
+			for i,cn in enumerate(cat.num):
+				cmask = (mmtn==cn) & (mmtnc>=5)
+				if cmask.any():
+					#cat[i].tvd = np.nanmax(tdsp[cmask])
+					cat[i].tvd = nanweimean(tdsp[cmask],mmtm0[cmask])
+					#cat[i].ntvd = [np.nanmax(nt0[cmask]), np.nanmax(nt1[cmask])]
+					cat[i].ntvd = [nanweimean(nt0[cmask],tvwm0[cmask]), \
+						nanweimean(nt1[cmask],mmtm0[cmask])]
+				else:
+					cat[i].tvd = np.nan
+					cat[i].ntvd = [np.nan, np.nan]
+			cat.avntvd = _nonthermal_velocity_dispersion(cat.avm2, cat.Tex, w_mol=13+16)
+			cat.write(self.ctnttable)
+			return self.ctnttable
+
+
+	# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+	def dsptable2ntmap(self):
+		#calculate nonthermal velocity dispersion from mmt & tvw table
+		if Decompose._readytorun([self.mmttable, self.usbrmsfits, self.dsptable, self.dsttable], self.ntmap, self.redo):
+			#cat = Catalogue().open(self.clumptable)
+			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
+			tdsp,nt0,nt1 = np.load(self.dsptable)
+			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
+			#Nagahama et al. 1998
+			Tex = _Tex(tvwpk)	#in K
+			N = 1.49e20 / (1-np.exp(-5.29/Tex)) * mmtm0	#in cm-2
+			d = np.load(self.dsttable)
+			header = fits.open(self.usbrmsfits, memmap=True)[0].header
+			#ntimg = np.empty(self.shape[-2:], dtype=np.float32)
+			#ntimg[:]=np.nan
+			#machimg = np.empty(self.shape[-2:], dtype=np.float32)
+			#machimg[:]=np.nan
+			Nimg = np.empty(self.shape[-2:], dtype=np.float32)
+			Nimg[:]=np.nan
+			ncompimg = np.empty(self.shape[-2:], dtype=np.float32)
+			ncompimg[:]=np.nan
+			for x in range(self.shape[-1]):
+				for y in range(self.shape[-2]):
+					mask = (mmtx==x) & (mmty==y) & (mmtnc>=5) & np.isfinite(nt1) & np.isfinite(mmtm0) & (d<self.Dlimit)# (np.abs(mmtm1)<30)# & np.isfinite(d)
+					if mask.any():
+						###use D
+						#idx = np.argmin(d[mask])
+						###use V
+						#ntimg[y,x] = nt1[mask].max()
+						#ntimg[y,x] = (nt1[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
+						#machimg[y,x] = (nt1[mask]/tdsp[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
+						Nimg[y,x] = np.nansum(N[mask])
+						ncompimg[y,x] = mask.sum()
+						'''
+						idx = np.argmin(np.abs(mmtm1[mask]))	#index in the masked array
+						#idx = np.argwhere(mask)[idx,0]	#index in original array
+						nummask = mmtn==mmtn[mask][idx]
+						idx = np.argmax(mmtm0[nummask])
+						m1 = mmtm1[idx]
+						m2 = mmtm2[idx]
+
+						nearestv = mmtm1[idx]
+
+						ntimg[y,x] = nt1[mask][idx]
+						'''
+			#fits.PrimaryHDU(data=ntimg, header=header).writeto(self.ntmap, overwrite=True)
+			#fits.PrimaryHDU(data=machimg, header=header).writeto(self.machmap, overwrite=True)
+			fits.PrimaryHDU(data=Nimg, header=header).writeto(self.Nmap, overwrite=True)
+			fits.PrimaryHDU(data=ncompimg, header=header).writeto(self.ncompmap, overwrite=True)
+
+	def dsptable2ncompmap(self):
+		#calculate nonthermal velocity dispersion from mmt & tvw table
+		if Decompose._readytorun([self.clumptable, self.mmttable, self.usbrmsfits], self.ntmap, self.redo):
+			#cat = Catalogue().open(self.clumptable)
+			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
+			#d = np.array([cat.D[int(np.argwhere(cat.num==n))] if n in cat.num else np.inf for n in mmtn])
+			header = fits.open(self.usbrmsfits, memmap=True)[0].header
+			ncompimg = np.empty(self.shape[-2:], dtype=np.float32)
+			ncompimg[:]=np.nan
+			for x in range(self.shape[-1]):
+				for y in range(self.shape[-2]):
+					mask = (mmtx==x) & (mmty==y) & (mmtnc>=5) & np.isfinite(mmtm0) & (np.abs(mmtm1)<30)
+					if mask.any():
+						ncompimg[y,x] = mask.sum()
+			fits.PrimaryHDU(data=ncompimg, header=header).writeto(self.ncompmap, overwrite=True)
+
 
 	##################################################################################################################
 	def clump_gradient(self):
-		doit = exists(self.mmttable) & exists(self.cmastable)
-		if not self.redo: doit = doit & (not exists(self.cgrdtable))
-		if doit:
-			print('Add gradient info to clump table')
-			cat = Catalogue().open(self.cmastable)
+		print('Add gradient info to clump table')
+		if Decompose._readytorun([self.mmttable, self.cdsttable], self.cgrdtable, self.redo):
+			cat = Catalogue().open(self.cdsttable)
 			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
-			for cn in range(int(mmtn.max())+1):
-				if cn in cat.num:
-					cmask = (mmtn==cn) & (mmtnc>3)
-					x = mmtx[cmask]
-					y = mmty[cmask]
-					v = mmtm1[cmask]
-					w = mmtm0[cmask]
-					idx = int(np.argwhere(cat.num==cn))
-					C = MWISPCube._gradient_fitting(x, y, v, w)
-					C = [c/(30/3600*np.pi/180*cat.D[idx]*1e3) for c in C]
-					#print(C)
-					cat[idx].gradient = C #in km/s/pc
+			for i,cn in enumerate(cat.num):
+				cmask = (mmtn==cn)
+				cmask = (mmtn==cn) & (mmtnc>3)
+				x = mmtx[cmask]
+				y = mmty[cmask]
+				v = mmtm1[cmask]
+				w = mmtm0[cmask]
+				C = Decompose._gradient_fitting(x, y, v, w)
+				CperD = [c/(30/3600*np.pi/180*1e3) for c in C]
+				#print(C)
+				cat[i].gradient = CperD #in km/s/pc
 			cat.write(self.cgrdtable)
+			return self.cgrdtable
 
 	def _gradient_fitting(x, y, v, w):
 		A = np.c_[x*w, y*w, np.ones(x.shape)*w]
@@ -507,305 +803,154 @@ class MWISPCube():
 		return list(C[0:2])
 
 	# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-	def table2image(self):
-		doit = exists(self.mmttable) & exists(self.usbrmsfile) & exists(self.cdsttable)
-		if not self.redo: doit = doit & (not exists(self.m2map))
-		if doit:
-			cat = Catalogue().open(self.cdsttable)
-			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
-			hdu = fits.open(self.usbrmsfile)[0]
-			d = np.array([cat.D[int(np.argwhere(cat.num==n))] if n in cat.num else np.inf for n in mmtn])
-			image = np.zeros_like(hdu.data)
-			for x in range(self.shape[-1]):
-				for y in range(self.shape[-2]):
-					mask = (mmtx==x) & (mmty==y) & (mmtnc>5) & np.isfinite(d)
-					if mask.any():
-						idx = np.argmin(d[mask])
-						image[y,x] = mmtm2[mask][idx]
-			fits.PrimaryHDU(data=image, header=hdu.header).writeto(self.m2map, overwrite=True)
+	def orient_fitting(self):
+		pass
 
 
-
-
-
+	def clump_structurefunction2(self):
+		print('')
 
 if __name__ == '__main__':
-	_tmp = MWISPCube()
+	_tmp = Decompose()
 	if _user=='sz268601':
 		#usbfiles = ['027.042+2.042']
-		usbfiles = glob.glob(os.path.join(_tmp.fitspath, '[012]*U_rms.fits'))
+		usbfiles = glob.glob(os.path.join(_tmp.fitspath, '[012]*U_rms.fits'))#02[79]*+[24]*U_rms.fits'))
 	else:
 		usbfiles = glob.glob(os.path.join(_tmp.fitspath, '[012]*U.fits'))
 
 	#m2correction_simulation()
 	#corr = m2correction_interpolate('m2correction2sigma.dat', plot=True)
 	prefixes = [os.path.basename(f)[:13] for f in usbfiles][:0]
+	prefixes.sort()
+	outcat=None
+	#cat = Catalogue().open('clump_self0.10_equalusenear.cat')
 	for i,prefix in enumerate(prefixes):
 		print('>>>[%i/%i]%s<<<' % (i+1,len(prefixes), prefix))
-		cube = MWISPCube(prefix=prefix, redo=True)
+		cube = Decompose(prefix=prefix, redo=True)
 		###cube.cube2caa()
 		#cube.caa2mmt()
 		#cube.mmt2table()
 		#cube.mmt2tvw()
 		#cube.tvw2table()
+		#cube.caa2avsp()
 		#cube.table_correctm2(corr=corr)
-		#cube.mmttvw2clump()
-		#cube.clump_distance()
-		#cube.clump_mass()
-		#cube.clump_gradient()
-		#cube.table2image()
-		###Merge Table
-		if 0:
-			cat=Catalogue().open(cube.cgrdtable)
-			cat.write('clumps.cat','a' if i>0 else 'w')
-		###Tile image
-		if 0:
-			pass
+		#outcat = cube.mmttvw2clump()
+
+		#outcat = cube.clump_distance()
+		#outcat = cube.clump_mass()
+		#cube.clump2table(cat)
+
+		#cube.table2dispersion()
+		#outcat = cube.clump_tnt()
+		cube.dsptable2ntmap()
+		#cube.dsptable2ncompmap()
+
+		#outcat = cube.clump_gradient()
+
+	###Merge Clump Catalogue
+	if 0:
+		suffix = 'clump_tnt.cat'
+		catfiles = glob.glob(os.path.join(_tmp.outpath, '*'+suffix))
+		catfiles.sort()
+		for i,catfile in enumerate(catfiles):
+			cat=Catalogue().open(catfile)
+			cat.write(suffix,'a' if i>0 else 'w')
+	###Tile image
+	if 1:
+		suffix = 'mach3kpc.fits'
+		fitsfiles = glob.glob(os.path.join(_tmp.outpath, '*'+suffix))
+		import tile
+		tile.tile(fitsfiles, suffix)
+		
+
+	###DISTANCE DETERMINATION:
+	#1.calculate kinematic distance from rotational curve with cube.clump_distance()
+	#2.expolate distance for clump whose distance are both nan, put clumps whose Dnear>Dfar at tangent point with the next block
+	#3.for clump Rgal<R0, determine in sz/dv/SD parameter space with the block after the next block
 
 
+	###fill those clump whose distances are both nan with extrapolation.
+	if 0:
+		cat=Catalogue().open('clump_tnt.cat')
+		origin = np.zeros(cat.size, dtype=int)
 
-class LinearWCS():
-	def __init__(self, header, axis):
-		self.wcs =  {key:header['%5s%1i' % (key,axis)] for key in ['NAXIS','CTYPE','CRVAL','CDELT','CRPIX','CROTA']}
+		prev_nannum = 0
+		while True:
+			unknown = np.isnan(cat.Dnear) & np.isnan(cat.Dfar)# & (cat.l>48) & (cat.l<55)
+			idx = np.argwhere(unknown).ravel()
+			if idx.size == prev_nannum:
+				break
+			prev_nannum = idx.size
+			for i in tqdm(idx):
+				samecloud = (np.abs(cat.l-cat.l[i])*60*2<(cat.sx+cat.sx[i])*2.355/2*10) & \
+					(np.abs(cat.b-cat.b[i])*60*2<(cat.sy+cat.sy[i])*2.355/2*10) & \
+					(np.abs(cat.avm1-cat.avm1[i])<10) & (~unknown)
+				good = samecloud & np.isfinite(cat.Dnear)
+				if good.sum()>=3:
+					p = np.polyfit(cat[good].avm1, cat[good].Dnear, 1)
+					cat[i].Dnear = cat[i].avm1*p[0]+p[1]
+					if cat[i].Dnear<0: cat[i].Dnear = np.nan
+					else: origin[i]=1
+				good = samecloud & np.isfinite(cat.Dfar)
+				if good.sum()>=3:
+					p = np.polyfit(cat[good].avm1, cat[good].Dfar,1)
+					cat[i].Dfar = cat[i].avm1*p[0]+p[1]
+					if cat[i].Dfar<0: cat[i].Dfar = np.nan
+					else: origin[i]=1
+				good = samecloud & np.isfinite(cat.Rgal)
+				if good.sum()>=3:
+					p = np.polyfit(cat[good].avm1, cat[good].Rgal,1)
+					cat[i].Rgal = cat[i].avm1*p[0]+p[1]
+					origin[i]=1
 
-	def pixel_to_world(self, pixel, base=0):
-		return (np.array(pixel)-self.wcs['CRPIX']+1-base)*self.wcs['CDELT']+self.wcs['CRVAL']
+		cat = _larson_distance(cat)
 
-	def world_to_pixel(self, world, base=0):
-		return (np.array(world)-self.wcs['CRVAL'])/self.wcs['CDELT']+self.wcs['CRPIX']-1+base
+		#put clump with wrong distance at tangent point
+		tangent = (cat.Dnear>cat.Dfar) & (cat.l<90)
+		for i in np.argwhere(tangent).ravel():
+			cat[i].Dnear = cat[i].Dfar = cat[i].D = R0 * np.cos(cat[i].l*dtor) / np.cos(cat[i].b*dtor)
+			origin[i] = 2
+		#original=0, filled=1, tangent=2
+		cat.Dorigin = origin
 
-	@property
-	def axis(self):
-		return self.pixel_to_world(np.arange(self.wcs['NAXIS']))
+		cat.physz = cat.angsz * cat.D *1e3	#in pc
+		cat.mass = cat.massperD2*cat.D**2
+		cat.write('clump_fillD.cat')
 
-	@property
-	def extent(self):
-		#imshow extent
-		return self.pixel_to_world([-0.5, self.wcs['NAXIS']-0.5])
-
-class PlotCatalogue():
-	def __init__(self, catfile='clumps.cat'):
-		self.catfile = catfile
-		self.cat = Catalogue().open(catfile)
-
-	def _squareroot(img, vmin, vmax):
-		#squareroot scale of image
-		img = (img-vmin)/(vmax-vmin)
-		img[img>1]=1
-		img[img<0]=0
-		img[np.isnan(img)]=1 #render nan as white
-		img = img**0.5
-		return img
-
-	def _figuresetting(xspan=None, yspan=None, parts=1, separate=False, lv=False):
-		#get figuresettings
-		#ax factor must be the same for IntInt map
-		if lv: axsize = (xspan/10/parts, yspan/100)
-		else: axsize = (xspan/10/parts, yspan/10)
-		marginleft = 0.35
-		marginright = 0.25#0.25
-		margintop = 0.2
-		marginbottom = 0.3
-		spacewidth = 0.1
-		spaceheight = 0.35
-		if separate:
-			figsize = (axsize[0]+marginleft+marginright, axsize[1]+marginbottom+margintop)
-		else:
-			figsize = (axsize[0]+marginleft+marginright, axsize[1]*parts+spaceheight*(parts-1)+marginbottom+margintop)
-		figadjust =dict(\
-			left=marginleft/figsize[0], right=1-marginright/figsize[0],\
-			bottom=marginbottom/figsize[1], top=1-margintop/figsize[1], \
-			wspace=spacewidth/axsize[0], hspace=spaceheight/axsize[1])
-		return figsize, figadjust
+	#idx = (np.log10(cat.SurfaceDensity)<0.7) & (cat.avm2<1) & (cat.angsz>0.0008) & np.isfinite(cat.Dnear) & (cat.D==cat.Dfar) & (cat.D>8)
 
 
-	def _truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
-		new_cmap = colors.LinearSegmentedColormap.from_list(
-			'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
-			cmap(np.linspace(minval, maxval, n)))
-		return new_cmap
+	###determine distance in sz/dv/SD log space according to clumps in outer galaxy.
+	if 0:
+		factor=0.10
+		#for factor in [0.08,0.12]:
+		print('Factor=%f' % factor)
+		#for factor in [0.12, 0.15]:
+		cat=Catalogue().open('clump_fillD.cat')
 
+		cat.mass /= cat.D**2
+		cat.physz = cat.angsz * cat.D *1e3	#in pc
+		fixed = np.isfinite(cat.Dfar) & np.isnan(cat.Dnear) & (cat.Dorigin==0) & (np.abs(cat.l-180)>10)
+		x1ref = np.log10(cat.physz[fixed])
+		x2ref = np.log10(cat.avm2[fixed])
+		x3ref = np.log10(cat.SurfaceDensity[fixed])
+		#(cat.D>10) & (cat.Rgal>6.5) & (cat.Rgal<8.5) & (np.abs(cat.D*np.sin(cat.b*np.pi/180))>0.5) & (cat.SurfaceDensity>15)
+		unknown = np.argwhere((cat.Dfar > cat.Dnear)).ravel()
+		for i in tqdm(unknown):
+			x1calnear = np.log10(cat.angsz[i]*cat.Dnear[i]*1e3)
+			x1calfar = np.log10(cat.angsz[i]*cat.Dfar[i]*1e3)
+			x2cal = np.log10(cat.avm2[i])
+			x3cal = np.log10(cat.SurfaceDensity[i])
+			### use 0.10/0.15 times 10% cut as binsize (np.percentile(X,90)-np.percentile(X,10))
+			dense = (np.abs(x2ref-x2cal)<0.6295341622557098*factor) & (np.abs(x3ref-x3cal)<0.8743434266315732*factor)
+			densenear = dense & (np.abs(x1ref-x1calnear)<1.2157975487515293*factor)
+			densefar = dense & (np.abs(x1ref-x1calfar)<1.2157975487515293*factor)
+			if densenear.sum() >= densefar.sum(): cat[i].D=cat[i].Dnear
+			if densenear.sum() < densefar.sum(): cat[i].D=cat[i].Dfar
+			#print(densenear.sum(), densefar.sum(), 'near' if densenear.sum() >= densefar.sum() else 'far',cat[i].b,cat[i].SurfaceDensity)
 
-	def plot_lbmap(self, figname, lrange, brange, fitsfile = '/Users/sz268601/Work/GuideMap/whole/tile_L_m0.fits', \
-		parts=1, dpi=400):
-		self.fitsfile = fitsfile
-		hdu = fits.open(self.fitsfile)[0]
-		img = PlotCatalogue._squareroot(hdu.data,0,18)
-		ext = [*LinearWCS(hdu.header,1).extent, *(LinearWCS(hdu.header,2).extent)]
-		lspan = max(lrange)-min(lrange)
-		bspan = max(brange)-min(brange)
-
-		plt.rcParams['xtick.top']=plt.rcParams['xtick.labeltop']=True
-		plt.rcParams['ytick.right']=plt.rcParams['ytick.labelright']=True
-		figsize, figadjust = PlotCatalogue._figuresetting(xspan=lspan,yspan=bspan, parts=parts, separate=False)
-		fig,ax=plt.subplots(nrows=parts, figsize=figsize)
-		if parts==1: ax=[ax]
-		plt.subplots_adjust(**figadjust)
-		cmap = PlotCatalogue._truncate_colormap(plt.get_cmap('gist_rainbow'), 0.8, 0.)
-		for i,a in enumerate(ax):
-			a.imshow(img, origin='lower', extent=ext, cmap='gray')
-			a.set_aspect('equal')
-			#a.plot(self.cat.l, self.cat.b, '.', markersize=0.02)
-			im = a.scatter(self.cat.l, self.cat.b, marker='.', \
-				c=self.cat.m1[:,1], cmap=cmap, vmin=-50,vmax=50, edgecolors='none', alpha=0.7, \
-				s=np.sqrt(self.cat.sx*self.cat.sy)/5)
-			a.set_xlim(min(lrange)+(i+1)*lspan/parts, min(lrange)+i*lspan/parts)
-			a.set_ylim(*brange)
-			a.set_ylabel('Galactic Latitude (deg)', fontdict=dict(size=5))
-			a.tick_params(axis='both', labelsize=5)
-			a.tick_params(which='major', length=2)
-			a.tick_params(which='minor', length=1)
-			a.xaxis.set_major_locator(ticker.MultipleLocator(10))
-			a.xaxis.set_minor_locator(ticker.MultipleLocator(1))
-			a.yaxis.set_major_locator(ticker.MultipleLocator(2))
-			a.yaxis.set_minor_locator(ticker.MultipleLocator(1))
-		ax[-1].set_xlabel('Galactic Longitude (deg)', fontdict=dict(size=5))
-		#cb = fig.add_axes([0.85, 0.15, 0.05, 0.7])
-		cb = fig.colorbar(im, ax=ax.ravel().tolist())#cax=cbar_ax)
-		cb.set_label(label='V$_{lsr}$ (km s$^{-1}$)', fontdict=dict(size=5))
-		cb.ax.tick_params(axis='both', labelsize=5)
-		#plt.show()
-		plt.savefig('%s.png' % figname, dpi=dpi)
-
-
-	def plot_plane(self, figname, dpi=400):
-		plt.rcParams['xtick.top']=plt.rcParams['xtick.labeltop']=True
-		plt.rcParams['ytick.right']=plt.rcParams['ytick.labelright']=True
-		figsize, figadjust = PlotCatalogue._figuresetting(xspan=200, yspan=250, parts=1, separate=False)
-		fig,ax=plt.subplots(figsize=figsize)
-		plt.subplots_adjust(**figadjust)
-		im = ax.scatter(self.cat.D*np.cos((self.cat.l-90)*np.pi/180), self.cat.D*np.sin((self.cat.l-90)*np.pi/180), marker='.', \
-			c=np.log10(self.cat.mass), cmap='rainbow', vmin=0.5, vmax=4.5, edgecolors='none', alpha=0.7, \
-			s=0.4)#np.log10(self.cat.sz))
-		theta = np.linspace(0,np.pi,181)-np.pi/2
-		ax.plot(8.5*np.cos(theta),8.5*np.sin(theta)-8.5)
-		ax.plot(0.5*np.cos(theta*2),0.5*np.sin(theta*2)-8.5)
-		ax.axis('equal')
-		ax.set_xlim(-5,15)
-		ax.set_ylim(-20,5)
-		fig.colorbar(im, location='bottom',orientation='horizontal')
-		plt.show()
-		#plt.savefig('%s.png' % figname, dpi=dpi)
-
-
-
-lrange=[19.75,122.25]
-brange=[-5.25,5.25]
-a=PlotCatalogue('clumps.cat')
-#a.plot_lbmap('fig_lbmap_vs', lrange, brange, parts=2)
-a.plot_plane('fig_plane_m')
-
-'''
-import matplotlib.pyplot as plt
-from regulatetable import Catalogue, Sample
-cat = Catalogue().open('clumps.cat')
-#plt.scatter(np.sqrt(cat.sx*cat.sy), cat.m2[:,1], c=cat.m1[:,1], cmap='rainbow',s=0.2)
-plt.scatter(cat.D*np.cos((cat.l-90)*np.pi/180), cat.D*np.sin((cat.l-90)*np.pi/180), c=np.log10(cat.m2[:,1]),\
-	marker='.', s=0.01, cmap='rainbow',vmin=-0.5,vmax=-0.1)
-#c=np.log10(cat.mass),
-theta = np.linspace(0,np.pi,181)-np.pi/2
-plt.plot(8.5*np.cos(theta),8.5*np.sin(theta)-8.5)
-plt.plot(0.5*np.cos(theta*2),0.5*np.sin(theta*2)-8.5)
-#plt.plot(cat.sz, cat.m2[:,1]*np.sqrt(3)/1e3,'.')
-#plt.xscale('log')
-#plt.yscale('log')
-#plt.plot([.1,100],0.48*np.array([.1,100])**0.63)
-plt.axis('equal')
-
-plt.show()
-'''
-
-
-'''
-	#extract clump params to a catalog
-	cat = []
-	mmttables = glob.glob(os.path.join(outpath,'[01]*mmt.npy'))
-	for i,tbl in enumerate(mmttables):
-		print('>>>[%i/%i]%s<<<' % (i+1,len(mmttables), tbl))
-
-		np.load
-'''
-
-if 0:
-	#combine results from all datacubes
-	fitsfiles = glob.glob(os.path.join(fitspath, '*_U_rms.fits'))[0:0]
-	catfiles = [os.path.join(outpath, os.path.basename(f)[:-11]+'_L_mmt.npy') for f in fitsfiles]
-	lons = [float(os.path.basename(f)[:7]) for f in catfiles]
-	lats = [float(os.path.basename(f)[7:13]) for f in catfiles]
-	if len(fitsfiles)>0:
-		xshape=fits.open(fitsfiles[0])[0].header['NAXIS1']
-		yshape=fits.open(fitsfiles[0])[0].header['NAXIS2']
-
-	cat=[]
-	for i,(ffile,cfile,lon,lat) in enumerate(zip(fitsfiles, catfiles, lons, lats)):
-		print('>>>[%i/%i]%s<<<' % (i+1,len(catfiles), ffile))
-		if not os.path.exists(cfile): continue
-		xmin = 0 if lon==max(lons) else 18
-		xmax = xshape-1 if lon==min(lons) else xshape-1-18
-		ymin = 0 if lat==min(lats) else 18
-		ymax = yshape-1 if lat==max(lats) else yshape-1-18
-
-		x,y,lbl,m0,m1,m2,pk,nc = np.load(cfile).T
-		mask = (x>=xmin) & (x<=xmax) & (y>=ymin) & (y<=ymax) & (nc>5)
-
-		cat += list(m2[mask])
-		'''
-		wcs = WCS(fits.open(ffile)[0].header, naxis=2)
-		print(dir(wcs))
-		l,b = wcs.pixel_to_world_values(x,y)
-		'''
-	if len(cat)>0:
-		np.save('dv.npy',cat)
-		print(len(cat))
-		import matplotlib.pyplot as plt
-		plt.hist(cat,bins=200)
-		plt.plot([168/2.35,168/2.35],[1,1e5],'--')
-		plt.yscale('log')
-		plt.show()
-	'''
-	import sys
-	sys.path.append('/Users/sz268601/Work/GuideMap/')
-	import tile
-	#tile.tile(glob.glob('0*_intnum.fits'),'tile_intnum.fits')
-	#tile.tile(glob.glob('0*_mmt_m1.fits'),'tile_mmt_m1.fits')
-	#tile.tile(glob.glob('0*_mmt_m2.fits'),'tile_mmt_m2.fits')
-	#tile.tile(glob.glob('0*_tw_tpeak.fits'),'tile_tw_tpeak.fits')
-	#tile.tile(glob.glob('0*_tw_m2.fits'),'tile_tw_m2.fits')
-	#tile.tile(glob.glob('0*_12CO.fits'),'tile_NT_12CO.fits')
-	#tile.tile(glob.glob('0*_13CO.fits'),'tile_NT_13CO.fits')
-	
-	print('%i pixels, median=%f' % (len(tnt),np.median(tnt)))
-	import matplotlib.pyplot as plt
-	plt.hist(tnt, bins=30, range=[0,1])
-	plt.plot([np.median(tnt)]*2,[0,200],'--')
-	'''
-	#plt.show()
-
-
-#import matplotlib.pyplot as plt
-
-'''
-x=np.arange(61)
-for snr in np.arange(5,81,0.5):
-	plt.plot(Sigma[SNR==snr],Fitting[SNR==snr])
-	a, b, c = np.polyfit(Sigma[SNR==snr],Fitting[SNR==snr],deg=2)
-	print(a,b,c)
-	plt.plot(x,a*x**2+b*x+c)
-'''
-'''
-ax = plt.scatter(SNR, Fitting/Sigma, c=Sigma, cmap='rainbow', marker='+')
-SNR=np.arange(5,81)
-g = [gausscut(2/s)**1.3 for s in SNR]
-plt.plot(SNR,g, 'k')
-plt.colorbar(ax)
-'''
-#plt.imshow(Fitting, cmap='rainbow')
-#print(Fitting.shape,Sigma.shape)
-#print(SNR)
-#for f in Fitting.T:
-#	plt.plot(f,Sigma,'.')
-#plt.scatter(Sigma, Sigma/Fitting, c=SNR)
-#plt.plot([0,Sigma.max()],[0,Sigma.max()],'--')
-#plt.show()
+		cat.physz = cat.angsz * cat.D *1e3	#in pc
+		cat.mass = cat.massperD2 * cat.D**2 	#in solar mass
+		cat.write('clump_self%4.2f_equalusenear.cat' % factor)
 
 
