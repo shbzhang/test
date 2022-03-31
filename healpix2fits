@@ -1,0 +1,179 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import healpy as hp
+from astropy.io import fits
+from astropy.wcs import WCS
+import glob
+from matplotlib.colors import LogNorm
+
+def healpix2fits(hp_filename, ref_filename, out_filename, usehp=True):
+	#read healpix file
+	if usehp:
+		old = hp.read_map(hp_filename)
+	else:
+		old = fits.open(hp_filename)[0].data
+	nside = np.sqrt(old.size/12).astype(int)
+
+	#read fits file for reference
+	ref = fits.open(ref_filename)[0]
+
+	#healpix idx to l,b
+	ipix = np.arange(old.size)
+	theta, phi = np.degrees(hp.pix2ang(nside=nside, ipix=ipix))
+	glat=90-theta
+	glon=phi
+
+	#
+	roi = (glon>10) & (glon<235) & (glat>-6) & (glat<6)
+	old = old[roi]
+	glon = glon[roi]
+	glat = glat[roi]
+
+	#fits l,b to x,y
+	wcs = WCS(ref.header, naxis=2)
+	x,y = wcs.world_to_pixel_values(glon, glat)
+
+	#interpolate to new grid
+	xg, yg = np.meshgrid(np.arange(ref.header['naxis1']), np.arange(ref.header['naxis2']))
+
+	#from scipy.interpolate import NearestNDInterpolator
+	#interp = NearestNDInterpolator(list(zip(x,y)),old)
+	#new = interp(xg,yg)
+	from scipy.interpolate import griddata
+	new = griddata(np.array((x,y)).T ,old, (xg,yg), method='nearest')
+
+	ref.data=new
+	ref.writeto(out_filename, overwrite=True)
+
+def fits2healpix(fits_filename, ref_filename):
+	pass
+
+#files = glob.glob('map*.fits')
+#for f in files:
+#	healpix2fits(f, '../nt.fits', 'interp_nearest_'+f, usehp=False)
+#healpix2fits('mapSp_fwhm10_ns2048_AngSt1.fits', '../nt.fits', 'test_linear.fits', usehp=False)
+
+def smooth_ntmap(fwhm=7):
+	import scipy.ndimage as ndimage
+	hdu = fits.open('../N5kpc.fits')[0]
+	nan = np.isnan(hdu.data)
+	hdu.data[nan]=0.17/2.355
+	#img = np.log10(hdu.data)
+	kern = np.sqrt(fwhm**2-(52/60)**2)/0.5/2.355
+	hdu.data = ndimage.gaussian_filter(hdu.data, sigma=(kern, kern), order=0)
+	hdu.data[nan]=np.nan
+	hdu.writeto('N5kpc_fwhm%i.fits' % fwhm, overwrite=True)
+
+smooth_ntmap(fwhm=10)
+'''
+measure = 'Sp'
+fwhm = 7
+correct_b = False
+
+sp = fits.open('interp_cubic_map%s_fwhm%i_ns%i_AngSt1.fits' % (measure, fwhm, 1024 if fwhm==10 else 2048))[0]
+spe = fits.open('interp_cubic_mapsig%s_fwhm%i_ns%i_AngSt1.fits' % (measure, fwhm, 1024 if fwhm==10 else 2048))[0]
+nt = fits.open('nt_fwhm%i.fits' % fwhm)[0]
+#print(sp.data.shape)
+#print(nt.data.shape)
+b = (np.arange(sp.header['NAXIS2'])-sp.header['CRPIX2']+1)*sp.header['CDELT2']+sp.header['CRVAL2']
+sp_b = np.nanmean(sp.data, axis=1)
+if correct_b:
+	factor = sp_b / sp_b[b.size//2]
+	factor = factor[:,np.newaxis]
+else: factor = 1
+#plt.plot(b, factor)
+
+X = nt.data.flatten(order='F')
+Y = (sp.data/factor).flatten(order='F')
+Yerr = (spe.data/factor).flatten(order='F')
+
+def bin_XY(X, Y, Yerr, bins, range):
+	bin_edges = np.linspace(*range, bins)
+	bin_mean = []
+	bin_std = []
+	goodY = np.isfinite(Y) & np.isfinite(Yerr)
+	for e0,e1 in zip(bin_edges[:-1],bin_edges[1:]):
+		idx = (X>=e0) & (X<e1) & goodY
+		if idx.sum()>5:
+			v = Y[idx]
+			w = Yerr[idx]
+			mean = np.sum(v*w)/np.sum(w)
+			std = np.std(v)
+			bin_mean.append(mean)
+			bin_std.append(std)
+		else:
+			bin_mean.append(np.nan)
+			bin_std.append(np.nan)
+	bin_center = (bin_edges[:-1]+bin_edges[1:])/2
+	bin_mean = np.array(bin_mean)
+	bin_std = np.array(bin_std)
+	return bin_center, bin_mean, bin_std
+
+#from scipy.stats import binned_statistic
+#bin_means, bin_edges, binnumber = binned_statistic(X, Y, bins=10, range=(0, 3))
+#bins = (bin_edges[:-1]+bin_edges[1:])/2
+
+#b = np.repeat(b, sp.header['naxis1'])
+
+fig,ax = plt.subplots(figsize=(8,6))
+ax.hist2d(X, Y, bins=[np.linspace(0,3,200), np.linspace(0,0.6 if measure=='Sp' else 100,100)], cmap='gray_r', zorder=1, alpha=1, norm=LogNorm())
+
+bin_center, bin_mean, bin_std = bin_XY(X, Y, Yerr, 30, (0,3))
+ax.fill_between(bin_center, bin_mean-bin_std, bin_mean+bin_std, color='tab:blue',edgecolor=None,alpha=0.3)
+ax.plot(bin_center, bin_mean, color='tab:blue', label='Sigma weighted')
+#ax.errorbar(bin_center-0.01, bin_mean, yerr=bin_std, ecolor='r')
+bin_center, bin_mean, bin_std = bin_XY(X, Y, Yerr*0+1, 30, (0,3))
+ax.fill_between(bin_center, bin_mean-bin_std, bin_mean+bin_std, color='tab:orange',edgecolor=None,alpha=0.3)
+ax.plot(bin_center, bin_mean, color='tab:orange', label='Equal weight')
+ax.legend()
+
+#ax.errorbar(bin_center+0.01, bin_mean, yerr=bin_std, ecolor='b')
+#plt.plot(nt, sp,',')
+#plt.scatter(nt.data.flatten(order='F')[:5000000], sp.data.flatten(order='F')[:5000000],c=b[:5000000],s=0.1)
+#plt.xscale('log')
+#plt.yscale('log')
+plt.xlabel('NTVD (km/s)')
+plt.ylabel(measure)
+
+plt.savefig('ntsp_%s_fwhm%i_%s.png' % (measure, fwhm, 'corb' if correct_b else 'ncor'))
+#plt.show()
+'''
+
+'''
+def _str2sixty(string):
+	sign = -1 if string[0]=='-' else 1
+	degree, minute, second = string.split(':')
+	degree = abs(int(degree))
+	minute = int(minute)
+	second = float(second)
+	return sign, degree, minute, second
+
+def _sixty2ten(sign, degree, minute, second):
+	return sign*(degree+minute/60+second/3600)
+
+def _ten2sixty(value):
+	sign = 1 if value>0 else -1
+	absv = abs(value)
+	degree = int(absv)
+	absv = (absv-degree)*60
+	minute = int(absv)
+	second = (absv-minute)*60
+	return sign, degree, minute, second
+
+def _sixty2str(sign, degree, minute, second, no_plus=True):
+	s = '+' if sign>0 else '-'
+	if (s=='+') & no_plus: s=''
+	return '%s%02i:%02i:%5.2f' % (s, degree, minute, second)
+
+def str2ten(strings):
+	return np.array([_sixty2ten(*_str2sixty(s)) for s in strings])
+
+def ten2str(values, no_plus=True):
+	return np.array([_sixty2str(*_ten2sixty(v), no_plus=no_plus) for v in values])
+
+
+ra = [0.125,10.875,-0.125,-10.875,124.5123]
+t=ten2str(ra)
+print(t)
+print(str2ten(t))
+'''
