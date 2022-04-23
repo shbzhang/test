@@ -203,6 +203,7 @@ class Decompose():
 		self.avsparray = os.path.join(self.outpath, prefix+'_L_avsp.npy')	#AVerage SPectral array
 		self.ccavsptable = os.path.join(self.outpath, prefix+'_clump_avsp.table')	
 		self.ctnttable = os.path.join(self.outpath, prefix+'_clump_tnt.cat')	#Thermal / Non-Thermal info
+		#fits map
 		self.Dlimit = 1 #kpc
 		self.ntmap = os.path.join(self.outpath, prefix+'_map_nt%1ikpc.fits' % self.Dlimit)	#Non-Thermal VD map
 		self.machmap = os.path.join(self.outpath, prefix+'_map_mach%1ikpc.fits' % self.Dlimit)	#Non-Thermal VD map
@@ -647,11 +648,12 @@ class Decompose():
 				#column density
 				cat[i].N = np.nanmean(N[cmask]) 	#in cm-2
 				####surface density
-				###f = (N*con.m_p*1.36*2).to('solMass/pc2') = 2.16278417e-20
-				cat[i].SurfaceDensity = cat[i].N*2.16278417e-20		#in Msun/pc2
+				###mean molecular weight per hydrogen molecule = 2.83 (Kauffmann et al. 2008)
+				###f = (N*con.m_p*2.83).to('solMass/pc2') = 2.26662357e-20	
+				cat[i].SurfaceDensity = cat[i].N*2.26662357e-20		#in Msun/pc2
 				####convert factor from N(cm-2) to mass(M_sun) at D(kpc)
-				###f = ((30/3600*np.pi/180*D)**2 * N * con.u*1.36*2 / con.M_sun).cgs = 4.57515092e-22
-				cat[i].massperD2 = np.nansum(N[cmask])*4.57515092e-22#*cat[i].D**2	#in solar mass/D^2
+				###f = ((30/3600*np.pi/180*D)**2 * N * con.u*2.83 / con.M_sun).cgs = 4.76017541e-22
+				cat[i].massperD2 = np.nansum(N[cmask])*4.76017541e-22#*cat[i].D**2	#in solar mass/D^2
 			
 			cat.angsz = np.sqrt(np.sqrt((cat.sx*2.355*30)**2 - beam**2) * np.sqrt((cat.sy*2.355*30)**2 - beam**2))/3600*dtor #in rad
 			
@@ -660,10 +662,10 @@ class Decompose():
 			cat.physz = cat.angsz * cat.D*1e3
 			cat.mass = cat.massperD2 * cat.D**2
 
-			####convert factor from mass(M_sun), Radius(pc) to n(cm-3)
+			####convert factor from mass(M_sun), Radius(pc) to density n(cm-3)
 			#M=1*u.Unit('solMass')
 			#R=1*u.Unit('pc')
-			#f = (M / (con.u*1.36*2) / (4/3*np.pi*R**3)).cgs = 3.57723659
+			#f = (M / (con.m_p*2.83) / (4/3*np.pi*R**3)).cgs = 3.41335489
 
 			cat.write(self.cmastable)
 			return self.cmastable
@@ -738,8 +740,7 @@ class Decompose():
 						###use D
 						#idx = np.argmin(d[mask])
 						###use V
-						#ntimg[y,x] = nt1[mask].max()
-						#ntimg[y,x] = (nt1[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
+						ntimg[y,x] = (nt1[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
 						#machimg[y,x] = (nt1[mask]/tdsp[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
 						Nimg[y,x] = np.nansum(N[mask])
 						ncompimg[y,x] = mask.sum()
@@ -790,17 +791,18 @@ class Decompose():
 				y = mmty[cmask]
 				v = mmtm1[cmask]
 				w = mmtm0[cmask]
-				C = Decompose._gradient_fitting(x, y, v, w)
-				CperD = [c/(30/3600*np.pi/180*1e3) for c in C]
+				C = Decompose._gradient_fitting(x, y, v, w)	#unit in km/s/pixel
+				GradientperDminus1 = [c/(30/3600*np.pi/180*1e3) for c in C]	#pixel to kpc
 				#print(C)
-				cat[i].gradient = CperD #in km/s/pc
+				cat[i].GradientperDminus1 = GradientperDminus1
+				#Gradient = GradientperDminus1 / D
 			cat.write(self.cgrdtable)
 			return self.cgrdtable
 
 	def _gradient_fitting(x, y, v, w):
 		A = np.c_[x*w, y*w, np.ones(x.shape)*w]
 		C,R,_,E = lstsq(A, v*w)    # coefficients
-		return list(C[0:2])
+		return list(C[0:2])	#gradient along x,y, Gtotal**2 = Gx**2+Gy**2
 
 	# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 	def orient_fitting(self):
@@ -809,6 +811,8 @@ class Decompose():
 
 	def clump_structurefunction2(self):
 		print('')
+
+
 
 if __name__ == '__main__':
 	_tmp = Decompose()
@@ -842,8 +846,7 @@ if __name__ == '__main__':
 
 		#cube.table2dispersion()
 		#outcat = cube.clump_tnt()
-		cube.dsptable2ntmap()
-		#cube.dsptable2ncompmap()
+		#cube.dsptable2ntmap()
 
 		#outcat = cube.clump_gradient()
 
@@ -856,12 +859,63 @@ if __name__ == '__main__':
 			cat=Catalogue().open(catfile)
 			cat.write(suffix,'a' if i>0 else 'w')
 	###Tile image
-	if 1:
+	if 0:
 		suffix = 'mach3kpc.fits'
 		fitsfiles = glob.glob(os.path.join(_tmp.outpath, '*'+suffix))
 		import tile
 		tile.tile(fitsfiles, suffix)
 		
+	###Extract parameters to npy file from Merged Clump Catalogue
+	if 1:
+		#distance
+		useDcat = 'clump_self0.10_equalusenear.cat'
+		cat=Catalogue().open(useDcat)
+		D = cat.D
+		np.save('D.npy', D)	#in kpc
+		Rgal = cat.Rgal
+		np.save('Rgal.npy', Rgal)	#in kpc
+		np.save('Dnear.npy', cat.Dnear)
+		np.save('Dfar.npy', cat.Dfar)
+		np.save('Dorigin.npy', cat.Dorigin)
+
+		#size
+		np.save('l.npy', cat.l)	#in deg
+		np.save('b.npy', cat.b)	#in deg
+		angsz = cat.angsz
+		np.save('angsz.npy', cat.angsz)	#in rad
+		physz = cat.angsz*D*1e3
+		np.save('physz.npy', physz)	#in pc
+		R = cat.angsz*D*1e3/2
+		np.save('R.npy', R)	#in pc
+		area = cat.area
+		np.save('area.npy', area)	#in pixel
+
+		#N,mass,Tex
+		cat=Catalogue().open('clump_mas.cat')
+		np.save('Tex.npy', cat.Tex)	#in /cm2
+		np.save('CD.npy', cat.N)	#in /cm2
+		np.save('SD.npy', cat.SurfaceDensity)	#in Msun/pc2
+		mass = cat.massperD2*D**2
+		np.save('mass.npy', mass)	#in Msun
+		n = mass/R**3*3.41335489	#in 1/cm3 (see comment in cube.clump_mass())
+		np.save('n.npy', n)	#in pixel
+
+		#velocity dispersion
+		cat=Catalogue().open('clump_tnt.cat')
+		np.save('avm1.npy', cat.avm1)	#in km/s
+		np.save('avm2.npy', cat.avm2)	#in km/s
+		np.save('tvd.npy', cat.tvd)	#in km/s
+		np.save('ntvd.npy', cat.ntvd)	#in km/s
+		np.save('avntvd.npy', cat.avntvd)	#in km/s
+		np.save('Mach.npy', cat.avntvd/cat.tvd)
+
+		cat=Catalogue().open('clump_grd.cat')
+		gradient = cat.GradientperDminus1/D[:,np.newaxis]
+		np.save('gradient.npy', gradient)	#in km/s/pc
+
+
+
+
 
 	###DISTANCE DETERMINATION:
 	#1.calculate kinematic distance from rotational curve with cube.clump_distance()
