@@ -90,7 +90,21 @@ plt.show()
 
 def _Tex(Tpeak):
 	#Nagahama et al. 1998
-	return 5.53/np.log(1+5.53/(Tpeak+0.819))
+	return 5.53/np.log(1+5.53/(Tpeak+0.819))	#in K
+
+def _column_density(Tex, IntegratedIntensity):
+	#Nagahama et al. 1998
+	return 1.49e20 / (1-np.exp(-5.29/Tex)) * IntegratedIntensity	#in cm-2
+
+def _deconvolve_velocity_dispersion(observed_velocity_dispersion, sideband='U'):
+	#remove velocity resolution from line width
+	if sideband in 'uU':
+		velocity_dispersion_resolution = 0.06740967102270175#0.1587376445532/sqrt(8ln2)
+	elif sideband in 'lL':
+		velocity_dispersion_resolution = 0.07051087444349394#0.1660404205322/sqrt(8ln2)
+	else:
+		velocity_resolution = 0
+	return np.sqrt(observed_velocity_dispersion**2 - velocity_dispersion_resolution**2)
 
 def _thermal_velocity_dispersion(Tex):
 	#this is thermal velocity dispersion of gas or SOUND SPEED(C_s)
@@ -204,7 +218,7 @@ class Decompose():
 		self.ccavsptable = os.path.join(self.outpath, prefix+'_clump_avsp.table')	
 		self.ctnttable = os.path.join(self.outpath, prefix+'_clump_tnt.cat')	#Thermal / Non-Thermal info
 		#fits map
-		self.Dlimit = 1 #kpc
+		self.Dlimit = 5 #kpc
 		self.ntmap = os.path.join(self.outpath, prefix+'_map_nt%1ikpc.fits' % self.Dlimit)	#Non-Thermal VD map
 		self.machmap = os.path.join(self.outpath, prefix+'_map_mach%1ikpc.fits' % self.Dlimit)	#Non-Thermal VD map
 		self.Nmap = os.path.join(self.outpath, prefix+'_map_N%1ikpc.fits' % self.Dlimit)	#Column density map
@@ -638,7 +652,7 @@ class Decompose():
 			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
 			#Nagahama et al. 1998
 			Tex = _Tex(tvwpk)	#in K
-			N = 1.49e20 / (1-np.exp(-5.29/Tex)) * mmtm0	#in cm-2
+			N = _column_density(Tex, mmtm0)# 1.49e20 / (1-np.exp(-5.29/Tex)) * mmtm0	#in cm-2
 			for i,cn in enumerate(cat.num):
 				cmask = (mmtn==cn)
 				###N=1*u.Unit('cm-2')
@@ -665,7 +679,7 @@ class Decompose():
 			####convert factor from mass(M_sun), Radius(pc) to density n(cm-3)
 			#M=1*u.Unit('solMass')
 			#R=1*u.Unit('pc')
-			#f = (M / (con.m_p*2.83) / (4/3*np.pi*R**3)).cgs = 3.41335489
+			#f_n = (M / (con.m_p*2.83) / (4/3*np.pi*R**3)).cgs = 3.41335489
 
 			cat.write(self.cmastable)
 			return self.cmastable
@@ -681,8 +695,10 @@ class Decompose():
 			#subtract thermal linewidth from m2
 			Tex = _Tex(tvwpk)	#in K
 			ThermalDispersion = _thermal_velocity_dispersion(Tex)	#np.sqrt(con.k_B/2.33/con.u*u.K).to('km/s')
-			NonThermalDispersion12 = _nonthermal_velocity_dispersion(tvwm2, Tex, w_mol=12+16)
-			NonThermalDispersion13 = _nonthermal_velocity_dispersion(mmtm2, Tex, w_mol=13+16)#still need number of channels >5
+			vd12 = _deconvolve_velocity_dispersion(tvwm2, sideband='U')
+			NonThermalDispersion12 = _nonthermal_velocity_dispersion(vd12, Tex, w_mol=12+16)
+			vd13 = _deconvolve_velocity_dispersion(mmtm2, sideband='L')
+			NonThermalDispersion13 = _nonthermal_velocity_dispersion(vd13, Tex, w_mol=13+16)#still need number of channels >5
 			dsp = np.c_[ThermalDispersion, NonThermalDispersion12, NonThermalDispersion13]
 			np.save(self.dsptable, dsp.T)
 
@@ -692,7 +708,7 @@ class Decompose():
 			cat = Catalogue().open(self.cmastable)
 			mmtn,mmty,mmtx,mmtm0,mmtm1,mmtm2,mmtpk,mmtnc = np.load(self.mmttable)
 			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
-			tdsp,nt0,nt1 = np.load(self.dsptable)
+			tdsp,nt12,nt13 = np.load(self.dsptable)
 			def nanweimean(v,w):
 				vw = v*w
 				return np.nanmean(vw)/np.nanmean(np.isfinite(vw)*w)
@@ -701,13 +717,14 @@ class Decompose():
 				if cmask.any():
 					#cat[i].tvd = np.nanmax(tdsp[cmask])
 					cat[i].tvd = nanweimean(tdsp[cmask],mmtm0[cmask])
-					#cat[i].ntvd = [np.nanmax(nt0[cmask]), np.nanmax(nt1[cmask])]
-					cat[i].ntvd = [nanweimean(nt0[cmask],tvwm0[cmask]), \
-						nanweimean(nt1[cmask],mmtm0[cmask])]
+					#cat[i].ntvd = [np.nanmax(nt12[cmask]), np.nanmax(nt13[cmask])]
+					cat[i].ntvd = [nanweimean(nt12[cmask],tvwm0[cmask]), \
+						nanweimean(nt13[cmask],mmtm0[cmask])]
 				else:
 					cat[i].tvd = np.nan
 					cat[i].ntvd = [np.nan, np.nan]
-			cat.avntvd = _nonthermal_velocity_dispersion(cat.avm2, cat.Tex, w_mol=13+16)
+			cat.vd = _deconvolve_velocity_dispersion(cat.avm2, sideband='L')
+			cat.avntvd = _nonthermal_velocity_dispersion(cat.vd, cat.Tex, w_mol=13+16)
 			cat.write(self.ctnttable)
 			return self.ctnttable
 
@@ -722,26 +739,30 @@ class Decompose():
 			tvwn,tvwy,tvwx,tvwm0,tvwm1,tvwm2,tvwpk = np.load(self.tvwtable)
 			#Nagahama et al. 1998
 			Tex = _Tex(tvwpk)	#in K
-			N = 1.49e20 / (1-np.exp(-5.29/Tex)) * mmtm0	#in cm-2
+			N = _column_density(Tex, mmtm0) #1.49e20 / (1-np.exp(-5.29/Tex)) * # mmtm0	#in cm-2
 			d = np.load(self.dsttable)
 			header = fits.open(self.usbrmsfits, memmap=True)[0].header
-			#ntimg = np.empty(self.shape[-2:], dtype=np.float32)
-			#ntimg[:]=np.nan
-			#machimg = np.empty(self.shape[-2:], dtype=np.float32)
-			#machimg[:]=np.nan
+			ntimg = np.empty(self.shape[-2:], dtype=np.float32)
+			ntimg[:]=np.nan
+			machimg = np.empty(self.shape[-2:], dtype=np.float32)
+			machimg[:]=np.nan
 			Nimg = np.empty(self.shape[-2:], dtype=np.float32)
 			Nimg[:]=np.nan
 			ncompimg = np.empty(self.shape[-2:], dtype=np.float32)
 			ncompimg[:]=np.nan
+			print(self.Dlimit)
 			for x in range(self.shape[-1]):
 				for y in range(self.shape[-2]):
-					mask = (mmtx==x) & (mmty==y) & (mmtnc>=5) & np.isfinite(nt1) & np.isfinite(mmtm0) & (d<self.Dlimit)# (np.abs(mmtm1)<30)# & np.isfinite(d)
+					if self.Dlimit==0:
+						mask = (mmtx==x) & (mmty==y) & (mmtnc>=5) & np.isfinite(nt1) & np.isfinite(mmtm0) & (np.abs(mmtm1)<30)
+					else:
+						mask = (mmtx==x) & (mmty==y) & (mmtnc>=5) & np.isfinite(nt1) & np.isfinite(mmtm0) & (d<self.Dlimit)
 					if mask.any():
 						###use D
 						#idx = np.argmin(d[mask])
 						###use V
 						ntimg[y,x] = (nt1[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
-						#machimg[y,x] = (nt1[mask]/tdsp[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
+						machimg[y,x] = (nt1[mask]/tdsp[mask]*mmtm0[mask]).sum() / mmtm0[mask].sum()
 						Nimg[y,x] = np.nansum(N[mask])
 						ncompimg[y,x] = mask.sum()
 						'''
@@ -756,8 +777,8 @@ class Decompose():
 
 						ntimg[y,x] = nt1[mask][idx]
 						'''
-			#fits.PrimaryHDU(data=ntimg, header=header).writeto(self.ntmap, overwrite=True)
-			#fits.PrimaryHDU(data=machimg, header=header).writeto(self.machmap, overwrite=True)
+			fits.PrimaryHDU(data=ntimg, header=header).writeto(self.ntmap, overwrite=True)
+			fits.PrimaryHDU(data=machimg, header=header).writeto(self.machmap, overwrite=True)
 			fits.PrimaryHDU(data=Nimg, header=header).writeto(self.Nmap, overwrite=True)
 			fits.PrimaryHDU(data=ncompimg, header=header).writeto(self.ncompmap, overwrite=True)
 
@@ -824,8 +845,9 @@ if __name__ == '__main__':
 
 	#m2correction_simulation()
 	#corr = m2correction_interpolate('m2correction2sigma.dat', plot=True)
-	prefixes = [os.path.basename(f)[:13] for f in usbfiles][:0]
+	prefixes = [os.path.basename(f)[:13] for f in usbfiles]
 	prefixes.sort()
+	#prefixes = prefixes[197:197]
 	outcat=None
 	#cat = Catalogue().open('clump_self0.10_equalusenear.cat')
 	for i,prefix in enumerate(prefixes):
@@ -842,10 +864,10 @@ if __name__ == '__main__':
 
 		#outcat = cube.clump_distance()
 		#outcat = cube.clump_mass()
-		#cube.clump2table(cat)
 
 		#cube.table2dispersion()
-		#outcat = cube.clump_tnt()
+		#cube.clump_tnt()
+		#cube.clump2table(cat)	#remember to do this before mosaicking a ntmap
 		#cube.dsptable2ntmap()
 
 		#outcat = cube.clump_gradient()
@@ -860,10 +882,12 @@ if __name__ == '__main__':
 			cat.write(suffix,'a' if i>0 else 'w')
 	###Tile image
 	if 0:
-		suffix = 'mach3kpc.fits'
-		fitsfiles = glob.glob(os.path.join(_tmp.outpath, '*'+suffix))
-		import tile
-		tile.tile(fitsfiles, suffix)
+		for p in ['N','ncomp','nt','mach']:
+			for d in range(6):
+				suffix = '%s%1ikpc.fits' % (p,d)
+				fitsfiles = glob.glob(os.path.join(_tmp.outpath, '*'+suffix))
+				import tile
+				tile.tile(fitsfiles, suffix)
 		
 	###Extract parameters to npy file from Merged Clump Catalogue
 	if 1:
@@ -904,6 +928,7 @@ if __name__ == '__main__':
 		cat=Catalogue().open('clump_tnt.cat')
 		np.save('avm1.npy', cat.avm1)	#in km/s
 		np.save('avm2.npy', cat.avm2)	#in km/s
+		np.save('vd.npy', cat.vd)	#in km/s
 		np.save('tvd.npy', cat.tvd)	#in km/s
 		np.save('ntvd.npy', cat.ntvd)	#in km/s
 		np.save('avntvd.npy', cat.avntvd)	#in km/s
@@ -986,20 +1011,20 @@ if __name__ == '__main__':
 		cat.physz = cat.angsz * cat.D *1e3	#in pc
 		fixed = np.isfinite(cat.Dfar) & np.isnan(cat.Dnear) & (cat.Dorigin==0) & (np.abs(cat.l-180)>10)
 		x1ref = np.log10(cat.physz[fixed])
-		x2ref = np.log10(cat.avm2[fixed])
+		x2ref = np.log10(cat.vd[fixed])
 		x3ref = np.log10(cat.SurfaceDensity[fixed])
 		#(cat.D>10) & (cat.Rgal>6.5) & (cat.Rgal<8.5) & (np.abs(cat.D*np.sin(cat.b*np.pi/180))>0.5) & (cat.SurfaceDensity>15)
 		unknown = np.argwhere((cat.Dfar > cat.Dnear)).ravel()
 		for i in tqdm(unknown):
 			x1calnear = np.log10(cat.angsz[i]*cat.Dnear[i]*1e3)
 			x1calfar = np.log10(cat.angsz[i]*cat.Dfar[i]*1e3)
-			x2cal = np.log10(cat.avm2[i])
+			x2cal = np.log10(cat.vd[i])
 			x3cal = np.log10(cat.SurfaceDensity[i])
-			### use 0.10/0.15 times 10% cut as binsize (np.percentile(X,90)-np.percentile(X,10))
-			dense = (np.abs(x2ref-x2cal)<0.6295341622557098*factor) & (np.abs(x3ref-x3cal)<0.8743434266315732*factor)
-			densenear = dense & (np.abs(x1ref-x1calnear)<1.2157975487515293*factor)
-			densefar = dense & (np.abs(x1ref-x1calfar)<1.2157975487515293*factor)
-			if densenear.sum() >= densefar.sum(): cat[i].D=cat[i].Dnear
+			### use factor(eg.0.10/0.15) times 10% cut as binsize, X=V[fixed], value=(np.percentile(X,90)-np.percentile(X,10))
+			dense = (np.abs(x2ref-x2cal)<0.55511412228553*factor) & (np.abs(x3ref-x3cal)<0.8107768986677445*factor)
+			densenear = dense & (np.abs(x1ref-x1calnear)<1.1626799741999294*factor)
+			densefar = dense & (np.abs(x1ref-x1calfar)<1.1626799741999294*factor)
+			if densenear.sum() >= densefar.sum(): cat[i].D=cat[i].Dnear#equal use near
 			if densenear.sum() < densefar.sum(): cat[i].D=cat[i].Dfar
 			#print(densenear.sum(), densefar.sum(), 'near' if densenear.sum() >= densefar.sum() else 'far',cat[i].b,cat[i].SurfaceDensity)
 
