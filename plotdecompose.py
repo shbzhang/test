@@ -39,6 +39,9 @@ def myBlRd(Vw = 50):
 	new[:,:3] /= new[:,:3].max()
 	return ListedColormap(new)
 
+def mylogspace(start, stop, num):
+	return np.logspace(np.log10(start), np.log10(stop), num)
+
 class LinearWCS():
 	def __init__(self, header, axis):
 		self.wcs =  {key:header['%5s%1i' % (key,axis)] for key in ['NAXIS','CTYPE','CRVAL','CDELT','CRPIX','CROTA']}
@@ -114,7 +117,7 @@ Tex = Parameter(np.load('Tex.npy'), unit=u.K, label=r'T$_{ex}$')
 vdensity = Parameter(np.load('n.npy'), unit=u.cm**-3, label=r'n')
 
 v0 = Parameter(np.load('avm1.npy'), unit=u.km/u.s, label=r'$v_{LSR}$')
-vd = Parameter(np.load('avm2.npy'), unit=u.km/u.s, label=r'$\sigma_v$')
+vd = Parameter(np.load('vd.npy'), unit=u.km/u.s, label=r'$\sigma_v$')
 tvd = Parameter(np.load('tvd.npy'), unit=u.km/u.s, label=r'$\sigma_{th}$')
 ntvd = Parameter(np.load('ntvd.npy')[:,1], unit=u.km/u.s, label=r'Averaged $\sigma_{nt}$ of spectra')
 avntvd = Parameter(np.load('avntvd.npy'), unit=u.km/u.s, label=r'$\sigma_{nt}$ of averaged spectrum')
@@ -229,8 +232,7 @@ class PlotCatalogue():
 		else:
 			plt.show()
 
-	def plot_lbmap(self, n=[0,]):
-		layers=[]
+	def plot_lbmap(self, n=range(5)):
 		l = Parameter(np.load('l.npy'), unit=u.deg, label='Galactic Longitude')
 		b = Parameter(np.load('b.npy'), unit=u.deg, label='Galactic Latitude')
 		if 0 in n:
@@ -238,8 +240,8 @@ class PlotCatalogue():
 			hdu = fits.open('/Users/sz268601/Work/GuideMap/whole/tile_L_m0.fits')[0]
 			img = PlotCatalogue._squareroot(hdu.data,0,18)
 			ext = [*LinearWCS(hdu.header,1).extent, *(LinearWCS(hdu.header,2).extent)]
-			layers.append({'method':'imshow', 'args':(img,), \
-				'kws':dict(origin='lower', extent=ext, cmap='gray')})
+			layers = [{'method':'imshow', 'args':(img,), \
+				'kws':dict(origin='lower', extent=ext, cmap='gray')},]
 
 
 			v0 = Parameter(np.load('avm1.npy'), unit=u.km/u.s, label=r'$v_{LSR}$')
@@ -262,6 +264,7 @@ class PlotCatalogue():
 			#	'kws':dict(c=[0,], s=[3300,], \
 			#	marker='.', edgecolors='none', alpha=0.7),\
 			#	'colorbar':dict(label=v0.axislabel)})
+			PlotCatalogue._lbmap(self.lrange, self.brange, figname=figname, parts=self.lbmap_parts, dpi=self.dpi, layers=layers)
 
 		if 1 in n:
 			figname = 'fig_lbmap_cnt1'
@@ -272,8 +275,8 @@ class PlotCatalogue():
 			#img = ndimage.gaussian_filter(hdu.data, sigma=(7.8/2.355, 7.8/2.355), order=0)
 			img = PlotCatalogue._squareroot(hdu.data,0,0.1)
 			ext = [*LinearWCS(hdu.header,1).extent, *(LinearWCS(hdu.header,2).extent)]
-			layers.append({'method':'imshow', 'args':(img,), \
-				'kws':dict(origin='lower', extent=ext, cmap='gray', vmin=-5, vmax=1)})
+			layers = [{'method':'imshow', 'args':(img,), \
+				'kws':dict(origin='lower', extent=ext, cmap='gray', vmin=-5, vmax=1)},]
 
 			D = Parameter(np.load('D.npy'), unit=u.kpc, label='Distance')
 			#v0 = Parameter(np.load('avm1.npy'), unit=u.km/u.s, label=r'$v_{LSR}$')
@@ -283,6 +286,7 @@ class PlotCatalogue():
 				'kws':dict(c=np.log10(avntvd[idx].value), vmin=-0.63, vmax=0, cmap='jet', s=1.5, \
 				marker='.', edgecolors='none', alpha=1.0), \
 				'colorbar':dict(label='log(%s)' % avntvd.axislabel)})
+			PlotCatalogue._lbmap(self.lrange, self.brange, figname=figname, parts=self.lbmap_parts, dpi=self.dpi, layers=layers)
  
 		if 2 in n:
 			figname = 'fig_lbmap_ntmap_whole'
@@ -295,9 +299,10 @@ class PlotCatalogue():
 			#img[nan]=-1#np.nan
 			ext = [*LinearWCS(hdu.header,1).extent, *(LinearWCS(hdu.header,2).extent)]
 			avntvd = Parameter(np.load('avntvd.npy'), unit=u.km/u.s, label=r'$\sigma_{nt}$')
-			layers.append({'method':'imshow', 'args':(img,),\
+			layers = [{'method':'imshow', 'args':(img,),\
 				'kws':dict(origin='lower', extent=ext, vmin=-0.63, vmax=0, cmap='jet'), \
-				'colorbar':dict(label='log(%s)' % avntvd.axislabel)})
+				'colorbar':dict(label='log(%s)' % avntvd.axislabel)},]
+			PlotCatalogue._lbmap(self.lrange, self.brange, figname=figname, parts=self.lbmap_parts, dpi=self.dpi, layers=layers)
 
 		if 3 in n:
 			figname = 'fig_lbmap_Smap'
@@ -310,9 +315,10 @@ class PlotCatalogue():
 			#img = np.log10(ndimage.gaussian_filter(hdu.data, sigma=(7.8/2.355, 7.8/2.355), order=0))
 			#img[nan]=-1#np.nan
 			ext = [*LinearWCS(hdu.header,1).extent, *(LinearWCS(hdu.header,2).extent)]
-			layers.append({'method':'imshow', 'args':(img,),\
+			layers = [{'method':'imshow', 'args':(img,),\
 				'kws':dict(origin='lower', extent=ext, vmin=0, vmax=1.9, cmap='jet'), \
-				'colorbar':dict(label=r'log(S [$^\circ$])')})
+				'colorbar':dict(label=r'log(S [$^\circ$])')}]
+			PlotCatalogue._lbmap(self.lrange, self.brange, figname=figname, parts=self.lbmap_parts, dpi=self.dpi, layers=layers)
 
 		if 4 in n:
 			figname = 'fig_lbmap_Spmap'
@@ -325,11 +331,11 @@ class PlotCatalogue():
 			#img = np.log10(ndimage.gaussian_filter(hdu.data, sigma=(7.8/2.355, 7.8/2.355), order=0))
 			#img[nan]=-1#np.nan
 			ext = [*LinearWCS(hdu.header,1).extent, *(LinearWCS(hdu.header,2).extent)]
-			layers.append({'method':'imshow', 'args':(img,),\
+			layers = [{'method':'imshow', 'args':(img,),\
 				'kws':dict(origin='lower', extent=ext, vmin=-1.2, vmax=-0.2, cmap='jet'), \
-				'colorbar':dict(label=r'log(S p [$^\circ$])')})
+				'colorbar':dict(label=r'log(S p [$^\circ$])')}]
+			PlotCatalogue._lbmap(self.lrange, self.brange, figname=figname, parts=self.lbmap_parts, dpi=self.dpi, layers=layers)
 
-		PlotCatalogue._lbmap(self.lrange, self.brange, figname=figname, parts=self.lbmap_parts, dpi=self.dpi, layers=layers)
 
 
 	##################################################################################################################
@@ -477,7 +483,7 @@ class PlotCatalogue():
 		else:
 			plt.show()
 
-	def plot_gplane(self, n=(3,)):
+	def plot_gplane(self, n=range(8)):
 		#PlotCatalogue._gplane(dpi=self.dpi)
 		#return
 		#cat = Catalogue().open('clump_self0.10_equalusenear.cat')
@@ -499,8 +505,8 @@ class PlotCatalogue():
 
 		if 0 in n:
 			#simple distribution
-			layers=[]
 			figname = 'fig_plane_xys'+suffix
+			layers=[]
 			#layers.append({'method':'plot', 'args':(x, y, '.'), \
 			#	'kws':dict(markersize=0.2)})
 			value = R
@@ -514,10 +520,10 @@ class PlotCatalogue():
 
 		if 1 in n:
 			#color=mass, size=size
+			figname = 'fig_plane_ms'+suffix
 			value = Parameter(np.load('mass.npy'), unit=u.Msun, label=r'Mass')
 			idx = np.argsort(value)
 			layers=[]
-			figname = 'fig_plane_ms'+suffix
 			layers.append({'method':'scatter', 'args':(x[idx], y[idx]), \
 				'kws':dict(c=np.log10(value[idx].value), cmap=myrainbow(), vmin=1, vmax=4.5, s=s[idx], \
 				marker='.', edgecolors='none', alpha=0.8), \
@@ -533,10 +539,10 @@ class PlotCatalogue():
 
 		if 2 in n:
 			#color=Surfacedensity, size=size
+			figname = 'fig_plane_SDs'+suffix
 			value = Parameter(np.load('SD.npy'), unit=u.Msun/u.pc**2, label=r'$\Sigma$')
 			idx = np.argsort(value)
 			layers=[]
-			figname = 'fig_plane_SDs'+suffix
 			layers.append({'method':'scatter', 'args':(x[idx], y[idx]), \
 				'kws':dict(c=np.log10(value[idx].value), cmap=myrainbow(), vmin=0.3, vmax=1.8, s=s[idx], \
 				marker='.', edgecolors='none', alpha=0.8), \
@@ -545,10 +551,10 @@ class PlotCatalogue():
 
 		if 3 in n:
 			#color=VelocityDispersion
-			value = Parameter(np.load('avm2.npy'), unit=u.km/u.s, label=r'$\sigma_v$')
+			figname = 'fig_plane_vds'+suffix
+			value = Parameter(np.load('vd.npy'), unit=u.km/u.s, label=r'$\sigma_v$')
 			idx = np.argsort(value)
 			layers=[]
-			figname = 'fig_plane_vds'+suffix
 			layers.append({'method':'scatter', 'args':(x[idx], y[idx]), \
 				'kws':dict(c=np.log10(value[idx].value), cmap=myrainbow(), vmin=-0.8, vmax=0.4, s=s[idx], \
 				marker='.', edgecolors='none', alpha=0.8), \
@@ -557,10 +563,10 @@ class PlotCatalogue():
 
 		if 4 in n:
 			#color=Temperature
+			figname = 'fig_plane_Ts'+suffix
 			value = Parameter(np.load('Tex.npy'), unit=u.K, label=r'T$_{ex}$')
 			idx = np.argsort(value)
 			layers=[]
-			figname = 'fig_plane_Ts'+suffix
 			layers.append({'method':'scatter', 'args':(x[idx], y[idx]), \
 				'kws':dict(c=value[idx].value, cmap=myrainbow(), vmin=5, vmax=25, s=s[idx], \
 				marker='.', edgecolors='none', alpha=0.8), \
@@ -570,10 +576,10 @@ class PlotCatalogue():
 
 		if 5 in n:
 			#color=Temperature
+			figname = 'fig_plane_ns'+suffix
 			value = Parameter(np.load('n.npy'), unit=u.cm**-3, label=r'n')
 			idx = np.argsort(value)
 			layers=[]
-			figname = 'fig_plane_ns'+suffix
 			layers.append({'method':'scatter', 'args':(x[idx], y[idx]), \
 				'kws':dict(c=np.log10(value[idx].value), cmap=myrainbow(), vmin=1, vmax=4, s=s[idx], \
 				marker='.', edgecolors='none', alpha=0.8), \
@@ -582,10 +588,10 @@ class PlotCatalogue():
 
 		if 6 in n:
 			#color=vertical distance
+			figname = 'fig_plane_Zs'+suffix
 			value = (D*np.sin(b))#.to(u.pc)
 			value.label = 'Z'
 			layers=[]
-			figname = 'fig_plane_Zs'+suffix
 			layers.append({'method':'scatter', 'args':(x, y), \
 				'kws':dict(c=value.value, cmap=myBlRd(), vmin=-0.2, vmax=0.2, s=s, \
 				marker='.', edgecolors='none', alpha=0.7), \
@@ -594,12 +600,12 @@ class PlotCatalogue():
 
 		if 7 in n:
 			#color=VelocityDispersion
+			figname = 'fig_plane_machs'+suffix
 			tvd = Parameter(np.load('tvd.npy'), unit=u.km/u.s, label=r'$\sigma_{th}$')
 			avntvd = Parameter(np.load('avntvd.npy'), unit=u.km/u.s, label=r'$\sigma_{nt}$')
-			value = Parameter(avntvd.value/tvd.value, label=r'Mach Number')
+			value = Parameter(avntvd.value/tvd.value, label=r'$\mathcal{M}_s$')
 			idx = np.argsort(value)
 			layers=[]
-			figname = None#'fig_plane_vds'+suffix
 			layers.append({'method':'scatter', 'args':(x[idx], y[idx]), \
 				'kws':dict(c=np.log10(value[idx].value), cmap=myrainbow(), vmin=-0.2, vmax=1, s=s[idx], \
 				marker='.', edgecolors='none', alpha=0.8), \
@@ -608,7 +614,7 @@ class PlotCatalogue():
 
 
 	##################################################################################################################
-	def plot_point3(self, figname, dpi=400):
+	def plot_point3(self, figname, dpi=600):
 		fig,ax=plt.subplots(ncols=3,sharex=True,sharey=True,figsize=[12,4])
 		plt.subplots_adjust(left=0.1,right=0.95,top=0.92,bottom=0.12)
 
@@ -686,7 +692,7 @@ class PlotCatalogue():
 
 		R = Parameter(np.load('R.npy'), unit=u.pc, \
 			bins=10**np.linspace(-2.1, 1.6, 101), label=r'R')
-		vd = Parameter(np.load('avm2.npy'), unit=u.km/u.s, \
+		vd = Parameter(np.load('vd.npy'), unit=u.km/u.s, \
 			bins=10**np.linspace(-1.1, 0.7, 101), label=r'$\sigma_v$')
 		SD = Parameter(np.load('SD.npy'), unit=u.Msun/u.pc**2, \
 			bins=10**np.linspace(-0.3, 2.6, 101), label=r'$\Sigma$')
@@ -700,7 +706,7 @@ class PlotCatalogue():
 		usenear = (D==Dnear) & inner
 		usefar = (D==Dfar) & inner
 
-		print(usenear.sum(),usefar.sum())
+		print('%i use near, %i use far.' % (usenear.sum(),usefar.sum()))
 		def _dot_contour(ax, X, Y, **kws):
 			#dots
 			ax.plot(X.value[usenear], Y.value[usenear],'.',markersize=0.5,color='orangered')
@@ -804,7 +810,7 @@ class PlotCatalogue():
 
 		#cat=Catalogue().open('clump_self0.10_equalusenear.cat')
 		R = dict(data=np.load('R.npy'), bins=10.0**np.arange(-2.2, 1.7, 0.05), label='R [pc]')
-		avm2 = dict(data=np.load('avm2.npy'), bins=10.0**np.arange(-1., 0.7, 0.025), label='$\sigma_v$ (km s$^{-1}$)')
+		avm2 = dict(data=np.load('vd.npy'), bins=10.0**np.arange(-1., 0.7, 0.025), label='$\sigma_v$ (km s$^{-1}$)')
 		SD = dict(data=np.load('SD.npy'), bins=10.0**np.arange(-0.8, 3.4, 0.025), label='$\Sigma$ (M$_\odot$ pc$^{-2}$)')
 		mass = dict(data=np.load('mass.npy'), bins=10.0**np.arange(-3, 5.8, 0.1), label='mass (M$_\odot$)')
 
@@ -857,29 +863,31 @@ class PlotCatalogue():
 
 		if xlog: x = np.sqrt(value.bins[:-1] * value.bins[1:])
 		else: x = (value.bins[:-1]+value.bins[1:])/2
-		for c,l in zip(components,labels):
+		mycmap=cm.get_cmap('rainbow_r',5)
+		for i,(c,l) in enumerate(zip(components,labels)):
 			v=value[c].value
 			v=v[v>0]
 			meanv = 10**np.nanmean(np.log10(v))
 			hist, edge = np.histogram(v, bins=value.bins)
-			ax.step(x, hist, where='mid', label='%s (%.2f)' % (l, meanv), color='k' if l=='All' else None)
-		ax.legend(fontsize=font['MEDIUM'])
+			ax.step(x, hist, where='mid', label='%s (%.2f)' % (l, meanv), color='k' if l=='All' else mycmap(i))
+		ax.legend(fontsize=font['SMALL'])
 
 		ax.tick_params(axis='both', labelsize=font['SMALL'])
 		if 'xlabel' in kws: ax.set_xlabel(kws['xlabel'], fontsize=font['MEDIUM'])
 		else: ax.set_xlabel(value.axislabel, fontsize=font['MEDIUM'])
 		if 'ylabel' in kws: ax.set_ylabel(kws['ylabel'], fontsize=font['MEDIUM'])
-		else: ax.set_ylabel('N', fontsize=font['MEDIUM'])
+		else: ax.set_ylabel('Count', fontsize=font['MEDIUM'])
+		ax.set_xlim(value.bins[[0,-1]])
 		if xlog: ax.set_xscale('log')
 		if ylog: ax.set_yscale('log')
 
 		if isinstance(figname, str):
-			plt.savefig('%s.png' % figname)
+			plt.savefig('%s.png' % figname, dpi=dpi)
 			print('Export to %s.png\n' % figname)			
 		else:
 			plt.show()
 
-	def plot_hist(self, n=range(8)):
+	def plot_hist(self, n=range(9)):
 		#cat=Catalogue().open('clump_self0.10.cat')
 		D = np.load('D.npy')
 		l = np.load('l.npy')
@@ -887,7 +895,7 @@ class PlotCatalogue():
 
 		if 1:
 			suffix='D'
-			sep = [0,1,4,9,16,25]#range(0,21,4)#
+			sep = [0,1,4,9,16,25]#(4,21,4)#
 			components = [(sep[i]<D) & (D<sep[i+1]) & mask for i in range(len(sep)-1)]
 			labels = [('%2i<' % sep[i] if i>0 else '')+'D<%2i kpc' % sep[i+1] for i in range(len(sep)-1)]
 		else:
@@ -902,21 +910,21 @@ class PlotCatalogue():
 		if 0 in n:
 			figname = 'fig_hist_SD_%s' % suffix
 			SD = Parameter(np.load('SD.npy'), unit=u.Msun/u.pc**2, \
-				bins=10.0**np.arange(-0.8, 3.4, 0.05), label=r'$\Sigma$')
+				bins=mylogspace(2e-1, 1e3, 50), label=r'$\Sigma$')
 			print(SD[mask].min(),SD[mask].max())
 			PlotCatalogue._hist(SD, components, labels, figname=figname)
 
 		if 1 in n:
 			figname = 'fig_hist_mass_%s' % suffix
 			mass = Parameter(np.load('mass.npy'), unit=u.Msun, \
-				bins=10.0**np.arange(-5.5, 5.8, 0.2), label=r'M$_{LTE}$')
+				bins=mylogspace(1e-6, 1e6, 50), label=r'M$_{LTE}$')
 			print(mass[mask].min(),mass[mask].max())
 			PlotCatalogue._hist(mass, components, labels, figname=figname)
 
 		if 2 in n:
 			figname = 'fig_hist_R_%s' % suffix
 			R = Parameter(np.load('R.npy'), unit=u.pc, \
-				bins = 10.0**np.arange(-3.2, 1.7, 0.1), label=r'R')
+				bins = mylogspace(3e-4, 6e1, 50), label=r'R')
 			print(np.nanmin(R[mask]),np.nanmax(R[mask]))			
 			PlotCatalogue._hist(R, components, labels, figname=figname)
 
@@ -924,41 +932,49 @@ class PlotCatalogue():
 			figname = 'fig_hist_n_%s' % suffix
 			value = np.load('n.npy')
 			vdensity = Parameter(np.load('n.npy'), unit=u.cm**-3, \
-				bins = 10.0**np.arange(-1, 6, 0.1), label=r'n')
+				bins = mylogspace(1e-1, 1e6, 50), label=r'n')
 			print(np.nanmin(vdensity[mask]),np.nanmax(vdensity[mask]))
 			PlotCatalogue._hist(vdensity, components, labels, figname=figname)
 
 		if 4 in n:
 			figname = 'fig_hist_vd_%s' % suffix
-			vd = Parameter(np.load('avm2.npy'), unit=u.km/u.s, \
-				bins = 10.0**np.arange(-1.9, 0.8, 0.05), label=r'$\sigma_v$')
+			vd = Parameter(np.load('vd.npy'), unit=u.km/u.s, \
+				bins = mylogspace(2e-2, 6, 50), label=r'$\sigma_v$')
 			print(np.nanmin(vd[mask]),np.nanmax(vd[mask]))
 			PlotCatalogue._hist(vd, components, labels, figname=figname)
 
 		if 5 in n:
 			figname = 'fig_hist_ntvd_%s' % suffix
 			avntvd = Parameter(np.load('avntvd.npy'), unit=u.km/u.s, \
-				bins=10.0**np.arange(-1.9, 0.8, 0.05), label=r'$\sigma_{nt}$')
+				bins = mylogspace(2e-2, 6, 50), label=r'$\sigma_{nt}$')
 			print(np.nanmin(avntvd[mask]),np.nanmax(avntvd[mask]))
 			PlotCatalogue._hist(avntvd, components, labels, figname=figname)
 
 		if 6 in n:
 			figname = 'fig_hist_Tex_%s' % suffix
 			Tex = Parameter(np.load('Tex.npy'), unit=u.K, \
-				bins=10.0**np.arange(0, 2, 0.05), label=r'T$_{ex}$')
+				bins=mylogspace(3, 100, 50), label=r'T$_{ex}$')
 			print(np.nanmin(Tex[mask]),np.nanmax(Tex[mask]))
 			PlotCatalogue._hist(Tex, components, labels, figname=figname)
 
 		if 7 in n:
 			figname = 'fig_hist_grd_%s' % suffix
 			gradient = Parameter(np.sqrt(np.sum(np.load('gradient.npy')**2,axis=1)), unit=u.km/u.s/u.pc, \
-				bins=10**np.linspace(-3.2,3,40), label='Gradient')
+				bins=mylogspace(3e-4, 5e2, 50), label='Gradient')
 			print(np.nanmin(gradient[mask]),np.nanmax(gradient[mask]))
 			PlotCatalogue._hist(gradient, components, labels, figname=figname, xlog=True)
 
+		if 8 in n:
+			figname = 'fig_hist_mach_%s' % suffix
+			tvd = Parameter(np.load('tvd.npy'), unit=u.km/u.s, label=r'$\sigma_{th}$')
+			avntvd = Parameter(np.load('avntvd.npy'), unit=u.km/u.s, label=r'$\sigma_{nt}$ of averaged spectrum')
+			Mach = avntvd/tvd
+			Mach.bins, Mach.label = mylogspace(2e-1, 4e1, 50), r'$\mathcal{M}_s$'
+			print(Mach[mask].lim)
+			PlotCatalogue._hist(Mach, components, labels, figname=figname, xlog=True)
 
 	##################################################################################################################
-	def _hist2d(X={}, Y={}, C=None, lines=[], figname=None, dpi=600, fitting=True, **kws):
+	def _hist2d(X, Y, C=None, lines=[], figname=None, dpi=600, fitting=True, **kws):
 		#plot a 2d histogram figure
 
 		def view(var):
@@ -1010,8 +1026,8 @@ class PlotCatalogue():
 				if l[1]!=0 and l[1]!=1: label += '$^{%.2f}$' % l[1]
 			plt.plot(x, loglinear(x,l[0],l[1]), l[2], label=label)
 			if l[1]<0: positivecorrelation=False
-		if positivecorrelation: plt.legend(loc='lower right')
-		else: plt.legend(loc='lower left')
+		if positivecorrelation: plt.legend(loc='lower right', fontsize=font['SMALL'])
+		else: plt.legend(loc='lower left', fontsize=font['SMALL'])
 
 		#ax.tick_params(axis='both', labelsize=font['SMALL'])
 		ax.set_xscale('log')
@@ -1037,7 +1053,7 @@ class PlotCatalogue():
 		cb.ax.tick_params(axis='both', labelsize=font['SMALL'])
 		
 		if isinstance(figname, str):
-			plt.savefig('%s.png' % figname)#, dpi=dpi)
+			plt.savefig('%s.png' % figname, dpi=dpi)
 			print('Export to %s.png\n' % figname)			
 		else:
 			plt.show()
@@ -1052,7 +1068,7 @@ class PlotCatalogue():
 		#the size of half maximum
 		R = Parameter(np.load('R.npy'), unit=u.pc, resolution=52/3600*dtor * D*1e3, \
 			bins=10**np.linspace(-2.4, 1.7, 200), label=r'R')
-		vd = Parameter(np.load('avm2.npy'), unit=u.km/u.s, resolution=0.168/2.355, \
+		vd = Parameter(np.load('vd.npy'), unit=u.km/u.s, resolution=0.168/2.355, \
 			bins=10**np.linspace(-1.2, 0.8, 200), label=r'$\sigma_v$')
 		angsz = Parameter(np.load('angsz.npy'), unit=u.rad, \
 			label = 'Angular Size')
@@ -1082,7 +1098,7 @@ class PlotCatalogue():
 		SDxR = SD*R
 		SDxR.bins, SDxR.label = 10**np.linspace(-3.0, 4.1, 200), r'$\Sigma$R'
 		Mach = avntvd/tvd
-		Mach.bins, Mach.label = 10**np.linspace(-0.4, 1.2, 200), r'Mach Number'
+		Mach.bins, Mach.label = 10**np.linspace(-0.4, 1.3, 200), r'$\mathcal{M}_s$'
 		vddR2 = vd/R**0.5
 		vddR2.bins, vddR2.label = 10**np.linspace(-1.5, 1.2, 200), r'$\sigma_v$/R$^{0.5}$'
 
@@ -1093,6 +1109,9 @@ class PlotCatalogue():
 			bins=10**np.linspace(-3,5.8, 200), label=r'M$_{Jeans}$')#-0.0, 3.0
 		alpha = Mvir/MLTE
 		alpha.bins, alpha.label = 10**np.linspace(-1.0, 3.0, 200), r'$\alpha_{vir}$'
+
+		gradient = Parameter(np.sqrt(np.sum(np.load('gradient.npy')**2,axis=1)), unit=u.km/u.s/u.pc, \
+			bins=10**np.linspace(-3.2,3,200), label='Gradient')
 
 		good = (D>5e-2*u.kpc) & ((l<170*u.deg) | (l>183*u.deg))
 
@@ -1139,10 +1158,14 @@ class PlotCatalogue():
 				lines=[(1,0,'g:',None,r'Mach = 1'), (2,0,'b:',None,r'Mach = 2')])
 		if 10 in n:
 			figname='fig_hist2d_avntvd_ntvd'
-			PlotCatalogue._hist2d(ntvd[good], avntvd[good], figname=figname, fitting=False, lines=[(1,1,'g:')])
+			PlotCatalogue._hist2d(ntvd[good], avntvd[good], figname=figname, fitting=False, \
+				lines=[(1,1,'g:'), (1.2,1,'r:')])
+		if 11 in n:
+			figname = 'fig_hist2d_R_grd'
+			PlotCatalogue._hist2d(R[good], gradient[good], figname=figname, fitting=True)
 
 
-		Q=1#0.5
+		Q=0.5
 		rho = vdensity*2.83*con.m_p
 		S = Parameter(np.load('BfieldS.npy'), unit=u.deg, \
 			bins=10.0**np.linspace(-0.5, 1.8, 200), label=r'$\sigma_\theta$')
@@ -1158,22 +1181,24 @@ class PlotCatalogue():
 		myvalue.label = 'MyValue'
 		print(myvalue.lim)
 
-		#ncomp = np.load('ncomp2kpc.npy')
-		near = good & (D<2*u.kpc) & (Rboundary>3.5*u.arcmin) & (S<25*u.deg)# & (ncomp<3)
-		if 11 in n:
-			figname=None#'fig_hist2d_n_Bposclassic'
+		ncomp = np.load('ncomp2kpc.npy')
+		near = good & (D<2*u.kpc) & (Rboundary>3.5*u.arcmin) & (S<25*u.deg)# & (ncomp<2)
+		if 12 in n:
+			figname='fig_hist2d_n_Bposclassic'
 			PlotCatalogue._hist2d(vdensity[near], Bpos_classic[near], figname=figname, fitting=False, \
-				lines=[(10/300**0.65,0.65,'k--',[300,1e10],'Cruther et al. 2010'), (10,0,'k--',[1e-10,300],None)])
-			#figname='fig_hist2d_n_Bposalter'
-			#PlotCatalogue._hist2d(vdensity[near], Bpos_alter[near], figname=figname, fitting=False, \
-			#	lines=[(10/300**0.65,0.65,'k--',[300,1e10],'Crutcher et al. 2010'), (10,0,'k--',[1e-10,300],None)])
+				lines=[(10/300**0.65,0.65,'k--',[300,1e10],'Crutcher et al. 2010'), (10,0,'k--',[1e-10,300],None), \
+				(0.31, 0.57, 'g--', None, 'Liu et al. 2022')])
+			figname='fig_hist2d_n_Bposalter'
+			PlotCatalogue._hist2d(vdensity[near], Bpos_alter[near], figname=figname, fitting=False, \
+				lines=[(10/300**0.65,0.65,'k--',[300,1e10],'Crutcher et al. 2010'), (10,0,'k--',[1e-10,300],None), \
+				(0.31, 0.57, 'g--', None, 'Liu et al. 2022')])
 			#PlotCatalogue._hist2d(vdensity[good], R[good], figname=figname, fitting=False, \
 			#	lines=[(10/300**0.65,0.65,'k--',[300,1e10],'Crutcher et al. 2010'), (10,0,'k--',[1e-10,300],None)])
-		if 12 in n:
+		if 13 in n:
 			figname=None
 			PlotCatalogue._hist2d(S[near], gradient[near], C=vdensity[near], figname=figname, fitting=False, \
 				lines=[(10/300**0.65,0.65,'k--',[300,1e10],'Crutcher et al. 2010'), (10,0,'k--',[1e-10,300],None)])
-		if 13 in n:
+		if 14 in n:
 			figname=None
 			PlotCatalogue._hist2d(SD[good], avntvd[good], figname=figname, fitting=False)
 
@@ -1196,7 +1221,7 @@ class PlotCatalogue():
 		print('X ranges from %e to %e %s' % (*X.lim[[0,2]].value, X.unit.to_string()))
 		print('Y ranges from %e to %e %s' % (*Y.lim[[0,2]].value, Y.unit.to_string()))
 
-		fig,ax = plt.subplots(figsize=(7,6))
+		fig,(ax,ax2) = plt.subplots(nrows=2, figsize=(7,6))
 		if X.scale is not None: ax.set_xscale(X.scale)
 		if Y.scale is not None: ax.set_yscale(Y.scale)
 
@@ -1204,8 +1229,16 @@ class PlotCatalogue():
 			#im=ax.plot(X.ravel(), Y.ravel(),'k,', alpha=1)
 			#h,xe,ye = np.histogram2d(X.value.ravel(), Y.value.ravel(), bins=[X.bins, Y.bins])
 			#print(h.max(),h.min())
+
+			l,b=np.meshgrid(np.arange(26251),np.arange(1261)-630)
+			from scipy.stats import binned_statistic_2d
+			h,xe,ye,bn = binned_statistic_2d(np.log10(X.value.ravel()), Y.value.ravel(), \
+				np.abs(b).ravel(), statistic='mean', bins=[np.log10(X.bins), np.linspace(np.nanmin(Y.value), np.nanmax(Y.value),200)])
+			ax2.imshow(h.T, origin='lower',extent=[xe[0], xe[-1], ye[0], ye[-1]], aspect='auto',cmap='rainbow_r')
 			ax.hist2d(X.value.ravel(), Y.value.ravel(), bins=[X.bins, Y.bins], \
-				cmap='gray_r', zorder=1, alpha=1, norm=LogNorm(10,500))#h.max()/10,h.max()))
+				cmap='gray_r', zorder=1, alpha=0.9, norm=LogNorm(10,500))#h.max()/10,h.max()))
+			#ax.hexbin(X.value.ravel(), Y.value.ravel(), \
+			#	cmap='gray_r', zorder=1, xscale='log', yscale='log')
 
 			mycmap=cm.get_cmap('rainbow_r',nlimit)
 			
@@ -1356,28 +1389,28 @@ class PlotCatalogue():
 		else:
 			plt.show()
 
-	def plot_binmean(self, n=range(5)):
+	def plot_binmean(self, n=(0,)):
 		Dlimit = '2kpc'	#''/'1kpc'/'2kpc'/'3kpc'/'5kpc'
 		fwhm = '7'	#'7'/'10'
 		ns = 2048 if fwhm=='7' else 1024
 		#Xs
 		logntvd = dict(datafile='Bfield/nt%s_fwhm%s.fits' % (Dlimit,fwhm), unit=u.km/u.s, scale='log', 
-			bins=np.logspace(np.log10(7e-2),np.log10(1.2),200), meanbins=np.logspace(np.log10(1e-1),np.log10(8e-1),11), \
+			bins=mylogspace(7e-2,1.2,200), meanbins=mylogspace(1e-1, 8e-1, 11), \
 			label=r'$\sigma_{nt}$')
 		ntvd = dict(datafile='Bfield/nt%s_fwhm%s.fits' % (Dlimit,fwhm), unit=u.km/u.s, scale='linear', \
-			bins=np.linspace(0, 1.5, 110), meanbins=np.linspace(0,1.2,12), \
+			bins=np.linspace(0, 1.5, 110), meanbins=np.linspace(0, 1.2, 12), \
 			label=r'$\sigma_{nt}$')
 
 		logN = dict(datafile='Bfield/N%s_fwhm%s.fits' % (Dlimit,fwhm), unit=u.cm**-2 ,scale='log', \
-			bins=np.logspace(np.log10(3e19), np.log10(6e21), 200), meanbins=np.logspace(np.log10(8e19),np.log10(2e21),11), \
+			bins=mylogspace(3e19, 6e21, 200), meanbins=mylogspace(8e19, 2e21, 11), \
 			label=r'N')
 
 		logmach = dict(datafile='Bfield/mach%s_fwhm%s.fits' % (Dlimit,fwhm), scale='log', \
-			bins=np.logspace(np.log10(0.2), np.log10(6), 200), meanbins=np.logspace(np.log10(5e-1),np.log10(4),11), \
-			label=r'Mach Number')
+			bins=mylogspace(0.2, 6, 200), meanbins=mylogspace(5e-1, 4, 11), \
+			label=r'$\mathcal{M}_s$')
 		mach = dict(datafile='Bfield/mach%s_fwhm%s.fits' % (Dlimit,fwhm), scale='linear', \
 			bins=np.linspace(0, 20, 110), meanbins=np.linspace(0,20,40), \
-			label=r'Mach Number')
+			label=r'$\mathcal{M}_s$')
 
 		ncomp = dict(datafile='ncomp%s.fits' % Dlimit, scale='linear', \
 			bins=np.linspace(0, 9, 80), meanbins=np.arange(0.5, 8.6, 1.0), \
@@ -1387,28 +1420,28 @@ class PlotCatalogue():
 		#polarization fraction (p), dispersion in polarization angles (S)
 		logSp = dict(datafile='Bfield/interp_nearest_mapSp_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), unit=u.deg, \
 			errorfile='Bfield/interp_nearest_mapsigSp_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), scale='log', \
-			bins=np.logspace(np.log10(0.03), np.log10(0.4), 200), label=r'S p')
+			bins=mylogspace(0.03, 0.4, 200), label=r'S p')
 		Sp = dict(datafile='Bfield/interp_nearest_mapSp_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), unit=u.deg, \
 			errorfile='Bfield/interp_nearest_mapsigSp_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), scale='linear', \
 			bins=np.linspace(0, 1, 200), label=r'S p')
 
 		logS = dict(datafile='Bfield/interp_nearest_mapS_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), unit=u.deg, \
 			errorfile='Bfield/interp_nearest_mapsigS_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), scale='log', \
-			bins=np.logspace(np.log10(0.6), np.log10(60), 200), label=r'S')
+			bins=mylogspace(0.6, 60, 200), label=r'S')
 		S = dict(datafile='Bfield/interp_nearest_mapS_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), unit=u.deg, \
 			errorfile='Bfield/interp_nearest_mapsigS_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), scale='linear', \
 			bins=np.linspace(0, 25, 85), label=r'S')
 
 		logp = dict(datafile='Bfield/interp_nearest_mapp_fwhm%s_ns%s_AngSt1.fits' % (fwhm, ns), scale='log', \
-			bins=np.logspace(np.log10(3e-3), np.log10(0.2), 200), label=r'p')
+			bins=mylogspace(3e-3, 0.2, 200), label=r'p')
 
 		if 0 in n:
-			figname = 'fig_binmean_ntvd_S'
+			figname = None#'fig_binmean_ntvd_S'
 			PlotCatalogue._binmean(logntvd, logS, ncomp, figname=figname)
-			figname = 'fig_binmean_ntvd_Sp'
-			PlotCatalogue._binmean(logntvd, logSp, ncomp, figname=figname)
-			figname = 'fig_binmean_ntvd_p'
-			PlotCatalogue._binmean(logntvd, logp, ncomp, figname=figname)
+			#figname = 'fig_binmean_ntvd_Sp'
+			#PlotCatalogue._binmean(logntvd, logSp, ncomp, figname=figname)
+			#figname = 'fig_binmean_ntvd_p'
+			#PlotCatalogue._binmean(logntvd, logp, ncomp, figname=figname)
 		if 1 in n:
 			figname = 'fig_binmean_N_S'
 			PlotCatalogue._binmean(logN, logS, ncomp, figname=figname)
